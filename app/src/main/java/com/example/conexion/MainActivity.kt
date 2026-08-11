@@ -75,14 +75,27 @@ class MainActivity : ComponentActivity() {
     // Match discovered from background BLE scan
     private var matchedBlePeer = mutableStateOf<BackgroundDiscoveryService.BlePeer?>(null)
 
+    // Current Session Token
+    private var currentSessionToken = "000000000000"
+
+    // Incoming file dialog state
+    private var incomingFileRequest = mutableStateOf<IncomingFilePrompt?>(null)
+
+    data class IncomingFilePrompt(
+        val fileName: String,
+        val fileSize: Long,
+        val onAccept: () -> Unit,
+        val onReject: () -> Unit
+    )
+
     private val bgServiceReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == BackgroundDiscoveryService.ACTION_PEER_FOUND) {
                 val name = intent.getStringExtra(BackgroundDiscoveryService.EXTRA_PEER_NAME) ?: "Dispositivo Cercano"
-                val mac = intent.getStringExtra(BackgroundDiscoveryService.EXTRA_PEER_MAC) ?: ""
+                val token = intent.getStringExtra(BackgroundDiscoveryService.EXTRA_PEER_TOKEN) ?: "000000000000"
                 val shake = intent.getLongExtra(BackgroundDiscoveryService.EXTRA_PEER_SHAKE, 0L)
-                Log.d(tag, "Received BLE peer match from background service: $name, $mac")
-                matchedBlePeer.value = BackgroundDiscoveryService.BlePeer(name, mac, shake)
+                Log.d(tag, "Received BLE peer match from background service: $name, token=$token")
+                matchedBlePeer.value = BackgroundDiscoveryService.BlePeer(name, token, shake)
             }
         }
     }
@@ -115,20 +128,36 @@ class MainActivity : ComponentActivity() {
             },
             onConnectionRequestReceived = { peer ->
                 connectionPromptPeer.value = peer
+            },
+            onError = { errorMsg ->
+                runOnUiThread {
+                    Toast.makeText(this, errorMsg, Toast.LENGTH_LONG).show()
+                }
             }
         )
 
-        fileTransferManager = FileTransferManager(this) { fileName, bytes, total, completed ->
-            transferFileName.value = fileName
-            isTransferring.value = !completed
-            isTransferCompleted.value = completed
-            transferProgress.value = if (total > 0) bytes.toFloat() / total else 0f
-            if (completed) {
+        fileTransferManager = FileTransferManager(
+            context = this,
+            onIncomingFileRequest = { fileName, fileSize, onAccept, onReject ->
+                incomingFileRequest.value = IncomingFilePrompt(fileName, fileSize, onAccept, onReject)
+            },
+            onError = { errorMsg ->
                 runOnUiThread {
-                    Toast.makeText(this, "Transferencia finalizada: $fileName", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, errorMsg, Toast.LENGTH_LONG).show()
+                }
+            },
+            onProgress = { fileName, bytes, total, completed ->
+                transferFileName.value = fileName
+                isTransferring.value = !completed
+                isTransferCompleted.value = completed
+                transferProgress.value = if (total > 0) bytes.toFloat() / total else 0f
+                if (completed) {
+                    runOnUiThread {
+                        Toast.makeText(this, "Transferencia finalizada: $fileName", Toast.LENGTH_LONG).show()
+                    }
                 }
             }
-        }
+        )
 
         toggleWifi(true)
 
@@ -166,16 +195,21 @@ class MainActivity : ComponentActivity() {
     private fun handleIntent(intent: Intent?) {
         if (intent != null && intent.hasExtra(BackgroundDiscoveryService.EXTRA_PEER_NAME)) {
             val name = intent.getStringExtra(BackgroundDiscoveryService.EXTRA_PEER_NAME) ?: "Dispositivo"
-            val mac = intent.getStringExtra(BackgroundDiscoveryService.EXTRA_PEER_MAC) ?: ""
+            val token = intent.getStringExtra(BackgroundDiscoveryService.EXTRA_PEER_TOKEN) ?: "000000000000"
             val shake = intent.getLongExtra(BackgroundDiscoveryService.EXTRA_PEER_SHAKE, 0L)
-            Log.d(tag, "Handled launch intent with BLE match: $name ($mac)")
-            matchedBlePeer.value = BackgroundDiscoveryService.BlePeer(name, mac, shake)
+            Log.d(tag, "Handled launch intent with BLE match: $name, token=$token")
+            matchedBlePeer.value = BackgroundDiscoveryService.BlePeer(name, token, shake)
         }
     }
 
     override fun onResume() {
         super.onResume()
         shakeDetector.start()
+        // Sync WiFi state
+        val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+        wifiManager?.let {
+            isWifiEnabledState.value = it.isWifiEnabled
+        }
         // Synchronize with background service status if running
         val prefs = getSharedPreferences("conexion_prefs", Context.MODE_PRIVATE)
         isBgDiscoveryEnabled.value = prefs.getBoolean("bg_discovery_enabled", false)
@@ -219,16 +253,24 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun generateSessionToken(): String {
+        val allowedChars = ('0'..'9') + ('A'..'F')
+        return (1..12)
+            .map { allowedChars.random() }
+            .joinToString("")
+    }
+
     private fun handleShake() {
         if (isShakeSearching.value) return
         val currentShakeTime = System.currentTimeMillis()
+        currentSessionToken = generateSessionToken()
 
         lifecycleScope.launch {
             isShakeSearching.value = true
             Toast.makeText(this@MainActivity, "¡Agitado detectado! Buscando dispositivos cercanos...", Toast.LENGTH_SHORT).show()
 
             // Update local Wi-Fi direct advertising & service discovery
-            wifiP2pHelper.startAdvertisingShake(myNameState.value, currentShakeTime)
+            wifiP2pHelper.startAdvertisingShake(myNameState.value, currentShakeTime, currentSessionToken)
             wifiP2pHelper.startDiscovery()
 
             // Also update foreground/background service if active
@@ -238,6 +280,7 @@ class MainActivity : ComponentActivity() {
                     putExtra(BackgroundDiscoveryService.EXTRA_USER_NAME, myNameState.value)
                     putExtra(BackgroundDiscoveryService.EXTRA_WIFI_MAC, wifiP2pHelper.myDeviceAddress.ifEmpty { "00:00:00:00:00:00" })
                     putExtra(BackgroundDiscoveryService.EXTRA_SHAKE_TIMESTAMP, currentShakeTime)
+                    putExtra(BackgroundDiscoveryService.EXTRA_PEER_TOKEN, currentSessionToken)
                 }
                 try {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -253,6 +296,10 @@ class MainActivity : ComponentActivity() {
             delay(15_000)
             wifiP2pHelper.stopDiscovery()
             isShakeSearching.value = false
+            // Show feedback toast if no peers were discovered
+            if (peersState.value.isEmpty()) {
+                Toast.makeText(this@MainActivity, "No se encontró a nadie cerca. Intenta agitar de nuevo cuando estén juntos.", Toast.LENGTH_LONG).show()
+            }
         }
     }
 
@@ -364,8 +411,45 @@ class MainActivity : ComponentActivity() {
                 text = "Alternativa moderna y rápida a Zapya",
                 style = MaterialTheme.typography.bodyMedium,
                 color = Color.Gray,
-                modifier = Modifier.padding(bottom = 24.dp)
+                modifier = Modifier.padding(bottom = 12.dp)
             )
+
+            // Alert banner if WiFi is disabled
+            AnimatedVisibility(visible = !isWifiEnabledState.value) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            text = "Wi-Fi está desactivado",
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                        Text(
+                            text = "Para usar Wi-Fi Direct, por favor activa el Wi-Fi en los ajustes de tu sistema.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Button(
+                            onClick = {
+                                try {
+                                    context.startActivity(Intent(android.provider.Settings.ACTION_WIFI_SETTINGS))
+                                } catch (e: Exception) {
+                                    Toast.makeText(context, "No se pudieron abrir los ajustes de Wi-Fi", Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                        ) {
+                            Text("Abrir Ajustes", color = Color.White)
+                        }
+                    }
+                }
+            }
 
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -621,13 +705,15 @@ class MainActivity : ComponentActivity() {
                     confirmButton = {
                         Button(
                             onClick = {
-                                // Create a WifiP2pDevice and PeerInfo to initiate connection using existing Wi-Fi Direct framework
-                                val wifiDevice = android.net.wifi.p2p.WifiP2pDevice().apply {
-                                    deviceAddress = peer.wifiMac
-                                    deviceName = peer.userName
+                                // Attempt to resolve peer using local DNS-SD service table via token
+                                val p2pPeer = wifiP2pHelper.findPeerByToken(peer.sessionToken)
+                                if (p2pPeer != null) {
+                                    wifiP2pHelper.connectToPeer(p2pPeer)
+                                } else {
+                                    // Peer MAC not resolved yet. Trigger WifiP2p service discovery to find and connect to peer automatically
+                                    Toast.makeText(context, "Buscando dirección de red segura...", Toast.LENGTH_SHORT).show()
+                                    wifiP2pHelper.startDiscoveryForToken(peer.sessionToken, peer.userName, peer.shakeTimestamp)
                                 }
-                                val p2pPeer = PeerInfo(wifiDevice, peer.userName, peer.shakeTimestamp)
-                                wifiP2pHelper.connectToPeer(p2pPeer)
                                 matchedBlePeer.value = null
                             }
                         ) {
@@ -639,6 +725,43 @@ class MainActivity : ComponentActivity() {
                             onClick = { matchedBlePeer.value = null }
                         ) {
                             Text("Ignorar")
+                        }
+                    }
+                )
+            }
+
+            incomingFileRequest.value?.let { request ->
+                val sizeInMb = String.format("%.2f MB", request.fileSize.toDouble() / (1024 * 1024))
+                AlertDialog(
+                    onDismissRequest = {
+                        request.onReject()
+                        incomingFileRequest.value = null
+                    },
+                    title = { Text("Confirmación de Recepción") },
+                    text = {
+                        Text(
+                            text = "¿Deseas aceptar el archivo \"${request.fileName}\" ($sizeInMb)?",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                request.onAccept()
+                                incomingFileRequest.value = null
+                            }
+                        ) {
+                            Text("Aceptar")
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(
+                            onClick = {
+                                request.onReject()
+                                incomingFileRequest.value = null
+                            }
+                        ) {
+                            Text("Rechazar")
                         }
                     }
                 )

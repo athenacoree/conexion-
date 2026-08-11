@@ -15,20 +15,25 @@ import android.os.Looper
 import android.util.Log
 import androidx.core.content.ContextCompat
 import java.lang.reflect.Method
+import kotlinx.coroutines.*
 
 data class PeerInfo(
     val device: WifiP2pDevice,
     val userName: String,
-    val shakeTimestamp: Long
+    val shakeTimestamp: Long,
+    val sessionToken: String = ""
 )
 
 class WifiP2pHelper(
     private val context: Context,
     private val onConnectionChanged: (WifiP2pInfo?) -> Unit,
     private val onPeersDiscovered: (List<PeerInfo>) -> Unit,
-    private val onConnectionRequestReceived: (PeerInfo) -> Unit
+    private val onConnectionRequestReceived: (PeerInfo) -> Unit,
+    private val onError: (String) -> Unit
 ) {
     private val tag = "WifiP2pHelper"
+    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    var isGroupFormed: Boolean = false
 
     val manager: WifiP2pManager? = context.getSystemService(Context.WIFI_P2P_SERVICE) as? WifiP2pManager
     var channel: WifiP2pManager.Channel? = manager?.initialize(context, Looper.getMainLooper(), null)
@@ -42,12 +47,29 @@ class WifiP2pHelper(
     }
 
     private val discoveredServicePeers = mutableMapOf<String, PeerInfo>()
+    private val tokenToPeerMap = mutableMapOf<String, PeerInfo>()
+    private var pendingTargetToken: String? = null
+    private var pendingTargetName: String? = null
+    private var pendingTargetShake: Long = 0L
+
     private var localServiceInfo: WifiP2pDnsSdServiceInfo? = null
     private var serviceRequest: WifiP2pDnsSdServiceRequest? = null
 
     var myDeviceName: String = "Usuario"
     private var myShakeTime: Long = 0
     var myDeviceAddress: String = ""
+
+    fun findPeerByToken(token: String): PeerInfo? {
+        if (token.isEmpty() || token == "00:00:00:00:00:00") return null
+        return tokenToPeerMap[token]
+    }
+
+    fun startDiscoveryForToken(token: String, userName: String, shakeTime: Long) {
+        pendingTargetToken = token
+        pendingTargetName = userName
+        pendingTargetShake = shakeTime
+        startDiscovery()
+    }
 
     init {
         setupBroadcastReceiver()
@@ -79,9 +101,11 @@ class WifiP2pHelper(
                     if (networkInfo?.isConnected == true) {
                         manager?.requestConnectionInfo(channel) { info ->
                             Log.d(tag, "Connection Info Received: Group Owner = ${info.isGroupOwner}, Address = ${info.groupOwnerAddress}")
+                            isGroupFormed = info.groupFormed
                             onConnectionChanged(info)
                         }
                     } else {
+                        isGroupFormed = false
                         onConnectionChanged(null)
                     }
                 }
@@ -97,6 +121,11 @@ class WifiP2pHelper(
     }
 
     fun unregister() {
+        try {
+            scope.cancel()
+        } catch (e: Exception) {
+            Log.e(tag, "Error cancelling coroutine scope", e)
+        }
         try {
             receiver?.let { context.unregisterReceiver(it) }
         } catch (e: Exception) {
@@ -120,16 +149,16 @@ class WifiP2pHelper(
                     Log.d(tag, "Successfully changed Wi-Fi Direct device name to: $name")
                 }
                 override fun onFailure(reason: Int) {
-                    Log.e(tag, "Failed to change Wi-Fi Direct device name: $reason")
+                    Log.e(tag, "Failed to change Wi-Fi Direct device name best-effort. Reason code: $reason. This is expected on Android 9+.")
                 }
             })
         } catch (e: Exception) {
-            Log.e(tag, "Reflection failed to change device name", e)
+            Log.e(tag, "CRITICAL WARNING: Reflection failed to change device name: ${e.message}. This is expected on Android 9+ and will be bypassed using DNS-SD.", e)
         }
     }
 
     @SuppressLint("MissingPermission")
-    fun startAdvertisingShake(userName: String, shakeTime: Long) {
+    fun startAdvertisingShake(userName: String, shakeTime: Long, sessionToken: String) {
         if (manager == null || channel == null) return
         myShakeTime = shakeTime
         setDeviceName(userName)
@@ -138,7 +167,8 @@ class WifiP2pHelper(
             override fun onSuccess() {
                 val record = mapOf(
                     "name" to userName,
-                    "shake" to shakeTime.toString()
+                    "shake" to shakeTime.toString(),
+                    "token" to sessionToken
                 )
                 localServiceInfo = WifiP2pDnsSdServiceInfo.newInstance(
                     "_conexion",
@@ -171,20 +201,28 @@ class WifiP2pHelper(
                 Log.d(tag, "Service discovered: instanceName=$instanceName, type=$registrationType, device=${srcDevice.deviceName}")
             },
             { _, txtRecordMap, srcDevice ->
-                Log.d(tag, "TXT record received: $txtRecordMap from ${srcDevice.deviceName}")
-                val name = txtRecordMap["name"] ?: srcDevice.deviceName
+                Log.d(tag, "TXT record received: $txtRecordMap from ${srcDevice.deviceAddress}")
+                val name = txtRecordMap["name"] ?: "Usuario Desconocido"
                 val shakeStr = txtRecordMap["shake"]
                 val shakeTime = shakeStr?.toLongOrNull() ?: 0L
+                val token = txtRecordMap["token"] ?: ""
 
                 val timeDifference = Math.abs(myShakeTime - shakeTime)
                 Log.d(tag, "Discovered device shake timestamp diff: ${timeDifference / 1000} seconds")
 
                 if (timeDifference < 15_000 && shakeTime != 0L) {
-                    val peer = PeerInfo(srcDevice, name, shakeTime)
+                    val peer = PeerInfo(srcDevice, name, shakeTime, token)
                     discoveredServicePeers[srcDevice.deviceAddress] = peer
+                    if (token.isNotEmpty()) {
+                        tokenToPeerMap[token] = peer
+                    }
                     onPeersDiscovered(discoveredServicePeers.values.toList())
 
-                    if (myShakeTime > 0 && shakeTime > 0) {
+                    if (pendingTargetToken != null && pendingTargetToken == token) {
+                        Log.d(tag, "Found pending target token $token. Connecting now.")
+                        pendingTargetToken = null
+                        connectToPeer(peer)
+                    } else if (myShakeTime > 0 && shakeTime > 0) {
                         onConnectionRequestReceived(peer)
                     }
                 }
@@ -200,11 +238,13 @@ class WifiP2pHelper(
                     }
                     override fun onFailure(reason: Int) {
                         Log.e(tag, "Service discovery failed: $reason")
+                        onError("Falla al iniciar descubrimiento de servicios (código $reason).")
                     }
                 })
             }
             override fun onFailure(reason: Int) {
                 Log.e(tag, "Failed to add service request: $reason")
+                onError("Falla al agregar solicitud de servicios (código $reason).")
             }
         })
     }
@@ -228,15 +268,26 @@ class WifiP2pHelper(
     }
 
     @SuppressLint("MissingPermission")
-    fun connectToPeer(peer: PeerInfo) {
+    fun connectToPeer(peer: PeerInfo, force: Boolean = false) {
         if (manager == null || channel == null) return
 
         val myAddr = myDeviceAddress
         val peerAddr = peer.device.deviceAddress
 
-        if (myAddr.isNotEmpty() && peerAddr.isNotEmpty()) {
+        if (!force && myAddr.isNotEmpty() && peerAddr.isNotEmpty()) {
             if (myAddr.compareTo(peerAddr) > 0) {
                 Log.d(tag, "My address ($myAddr) > Peer address ($peerAddr). Postponing connection request so peer connects to me.")
+                onError("Esperando a que ${peer.userName} inicie la conexión...")
+
+                // Start a timeout coroutine to automatically fallback to connecting if group isn't formed in 6 seconds
+                scope.launch {
+                    delay(6000)
+                    if (!isGroupFormed) {
+                        Log.d(tag, "Timeout reached. Fallback to connecting directly to ${peer.userName}.")
+                        onError("Conexión automática demorada. Reintentando conectar de forma forzada...")
+                        connectToPeer(peer, force = true)
+                    }
+                }
                 return
             }
         }
@@ -250,7 +301,13 @@ class WifiP2pHelper(
                 Log.d(tag, "Initiated connection to ${peer.userName}")
             }
             override fun onFailure(reason: Int) {
+                val errorDesc = when (reason) {
+                    WifiP2pManager.P2P_UNSUPPORTED -> "Wi-Fi Direct no es soportado en este dispositivo."
+                    WifiP2pManager.BUSY -> "El sistema de Wi-Fi Direct está ocupado. Intenta de nuevo."
+                    else -> "Fallo al iniciar conexión (código $reason)."
+                }
                 Log.e(tag, "Connection initiation failed: $reason")
+                onError(errorDesc)
             }
         })
     }

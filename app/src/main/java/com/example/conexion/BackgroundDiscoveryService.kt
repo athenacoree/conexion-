@@ -35,6 +35,7 @@ class BackgroundDiscoveryService : Service() {
         const val EXTRA_PEER_NAME = "EXTRA_PEER_NAME"
         const val EXTRA_PEER_MAC = "EXTRA_PEER_MAC"
         const val EXTRA_PEER_SHAKE = "EXTRA_PEER_SHAKE"
+        const val EXTRA_PEER_TOKEN = "EXTRA_PEER_TOKEN"
 
         private const val NOTIFICATION_ID = 1001
         private const val CHANNEL_ID = "conexion_bg_discovery"
@@ -50,6 +51,7 @@ class BackgroundDiscoveryService : Service() {
     private var currentUserName = "Mi Dispositivo"
     private var currentWifiMac = "00:00:00:00:00:00"
     private var currentShakeTime = 0L
+    private var currentSessionToken = "000000000000"
 
     // Tracks peers to avoid showing duplicate notifications in a short window
     private val recentlyNotifiedPeers = mutableMapOf<String, Long>()
@@ -84,7 +86,8 @@ class BackgroundDiscoveryService : Service() {
             }
             ACTION_UPDATE_SHAKE -> {
                 currentShakeTime = intent?.getLongExtra(EXTRA_SHAKE_TIMESTAMP, 0L) ?: 0L
-                Log.d(tag, "Updating shake timestamp to: $currentShakeTime")
+                currentSessionToken = intent?.getStringExtra(EXTRA_PEER_TOKEN) ?: "000000000000"
+                Log.d(tag, "Updating shake timestamp to: $currentShakeTime with token: $currentSessionToken")
                 startForegroundCompat()
                 // Restart advertising with the updated payload containing the shake timestamp
                 startAdvertisingAndScanning()
@@ -151,8 +154,19 @@ class BackgroundDiscoveryService : Service() {
                 val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
                 bluetoothAdapter = bluetoothManager?.adapter
             }
+            if (bluetoothAdapter?.isEnabled != true) {
+                Log.e(tag, "Bluetooth is disabled. Cannot start BLE advertising or scanning.")
+                showErrorToast("Bluetooth desactivado. Por favor, actívalo para usar búsqueda BLE.")
+                return
+            }
             if (advertiser == null) advertiser = bluetoothAdapter?.bluetoothLeAdvertiser
             if (scanner == null) scanner = bluetoothAdapter?.bluetoothLeScanner
+
+            if (advertiser == null || scanner == null) {
+                Log.e(tag, "BLE is not supported on this device.")
+                showErrorToast("BLE no es soportado o no está listo en este dispositivo.")
+                return
+            }
 
             stopAdvertisingAndScanningSilently()
 
@@ -163,7 +177,7 @@ class BackgroundDiscoveryService : Service() {
                 .setConnectable(false)
                 .build()
 
-            val payload = buildManufacturerData(currentShakeTime, currentWifiMac, currentUserName)
+            val payload = buildManufacturerData(currentShakeTime, currentSessionToken, currentUserName)
             val advData = AdvertiseData.Builder()
                 .addManufacturerData(MANUFACTURER_ID, payload)
                 .build()
@@ -186,6 +200,14 @@ class BackgroundDiscoveryService : Service() {
 
         } catch (e: Exception) {
             Log.e(tag, "Failed to start advertising or scanning", e)
+            showErrorToast("Fallo al iniciar búsqueda BLE: ${e.localizedMessage}")
+        }
+    }
+
+    private fun showErrorToast(msg: String) {
+        val handler = android.os.Handler(android.os.Looper.getMainLooper())
+        handler.post {
+            android.widget.Toast.makeText(applicationContext, msg, android.widget.Toast.LENGTH_LONG).show()
         }
     }
 
@@ -256,25 +278,26 @@ class BackgroundDiscoveryService : Service() {
         val now = System.currentTimeMillis()
 
         // Ignore our own advertisement if reflected
-        if (peer.wifiMac == currentWifiMac && currentWifiMac != "00:00:00:00:00:00") {
+        if (peer.sessionToken == currentSessionToken && currentSessionToken != "000000000000") {
             return
         }
 
         // Check if both devices have a recent shake within 15 seconds of each other
         val timeDiff = Math.abs(currentShakeTime - peer.shakeTimestamp)
-        Log.d(tag, "Discovered BLE peer: name=${peer.userName}, mac=${peer.wifiMac}, shakeTime=${peer.shakeTimestamp}, diff=${timeDiff / 1000}s")
+        Log.d(tag, "Discovered BLE peer: name=${peer.userName}, token=${peer.sessionToken}, shakeTime=${peer.shakeTimestamp}, diff=${timeDiff / 1000}s")
 
         if (currentShakeTime > 0 && peer.shakeTimestamp > 0 && timeDiff < 15_000) {
             // We have a match! Let's notify and connect
-            val lastNotified = recentlyNotifiedPeers[peer.wifiMac] ?: 0L
+            val lastNotified = recentlyNotifiedPeers[peer.sessionToken] ?: 0L
             if (now - lastNotified > 10_000) { // Throttle duplicate notifications (10 seconds)
-                recentlyNotifiedPeers[peer.wifiMac] = now
-                Log.d(tag, "MATCH DETECTED with peer: ${peer.userName} (${peer.wifiMac})")
+                recentlyNotifiedPeers[peer.sessionToken] = now
+                Log.d(tag, "MATCH DETECTED with peer: ${peer.userName} (${peer.sessionToken})")
 
                 // 1. Broadcast the match to MainActivity
                 val intent = Intent(ACTION_PEER_FOUND).apply {
                     putExtra(EXTRA_PEER_NAME, peer.userName)
-                    putExtra(EXTRA_PEER_MAC, peer.wifiMac)
+                    putExtra(EXTRA_PEER_MAC, "") // No longer passing plain Wi-Fi MAC
+                    putExtra(EXTRA_PEER_TOKEN, peer.sessionToken)
                     putExtra(EXTRA_PEER_SHAKE, peer.shakeTimestamp)
                 }
                 sendBroadcast(intent)
@@ -289,7 +312,7 @@ class BackgroundDiscoveryService : Service() {
         val intent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra(EXTRA_PEER_NAME, peer.userName)
-            putExtra(EXTRA_PEER_MAC, peer.wifiMac)
+            putExtra(EXTRA_PEER_TOKEN, peer.sessionToken)
             putExtra(EXTRA_PEER_SHAKE, peer.shakeTimestamp)
         }
         val pendingIntent = PendingIntent.getActivity(
@@ -311,24 +334,22 @@ class BackgroundDiscoveryService : Service() {
         manager.notify(MATCH_NOTIFICATION_ID, notification)
     }
 
-    private fun buildManufacturerData(shakeTime: Long, wifiMac: String, userName: String): ByteArray {
+    private fun buildManufacturerData(shakeTime: Long, sessionToken: String, userName: String): ByteArray {
         val stream = ByteArrayOutputStream()
         val dos = DataOutputStream(stream)
         dos.writeLong(shakeTime) // 8 bytes
 
-        // Write MAC Address
-        val macBytes = ByteArray(6)
-        val parts = wifiMac.split(":")
-        if (parts.size == 6) {
-            try {
-                for (i in 0 until 6) {
-                    macBytes[i] = parts[i].toInt(16).toByte()
-                }
-            } catch (e: Exception) {
-                Log.e(tag, "Failed to parse MAC address bytes", e)
+        // Write Session Token (6 bytes hex represented by 12 chars string, convert to 6 bytes payload)
+        val tokenBytes = ByteArray(6)
+        try {
+            for (i in 0 until 6) {
+                val byteStr = sessionToken.substring(i * 2, i * 2 + 2)
+                tokenBytes[i] = byteStr.toInt(16).toByte()
             }
+        } catch (e: Exception) {
+            Log.e(tag, "Failed to parse session token to bytes", e)
         }
-        dos.write(macBytes) // 6 bytes
+        dos.write(tokenBytes) // 6 bytes
 
         // Write truncated User Name
         val nameBytes = userName.toByteArray(Charsets.UTF_8)
@@ -344,9 +365,9 @@ class BackgroundDiscoveryService : Service() {
             val buffer = ByteBuffer.wrap(data)
             val shakeTime = buffer.long
 
-            val macBytes = ByteArray(6)
-            buffer.get(macBytes)
-            val wifiMac = macBytes.joinToString(":") { String.format("%02X", it) }
+            val tokenBytes = ByteArray(6)
+            buffer.get(tokenBytes)
+            val sessionToken = tokenBytes.joinToString("") { String.format("%02X", it) }
 
             val nameBytes = ByteArray(data.size - 14)
             buffer.get(nameBytes)
@@ -354,7 +375,7 @@ class BackgroundDiscoveryService : Service() {
 
             BlePeer(
                 userName = if (userName.isEmpty()) "Usuario BLE" else userName,
-                wifiMac = wifiMac,
+                sessionToken = sessionToken,
                 shakeTimestamp = shakeTime
             )
         } catch (e: Exception) {
@@ -365,7 +386,7 @@ class BackgroundDiscoveryService : Service() {
 
     data class BlePeer(
         val userName: String,
-        val wifiMac: String,
+        val sessionToken: String,
         val shakeTimestamp: Long
     )
 }
