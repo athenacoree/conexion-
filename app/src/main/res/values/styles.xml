@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Base application theme. -->
+    <style name="Theme.Design.NoActionBar" parent="android:Theme.Material.NoActionBar">
+        <!-- Customize your theme here. -->
+    </style>
+</resources>
