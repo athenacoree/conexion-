@@ -3,12 +3,14 @@ package com.example.conexion
 import android.content.Context
 import android.hardware.Sensor
 import android.hardware.SensorEvent
+import android.content.Intent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.os.Build
 import kotlin.math.sqrt
 
 class ShakeDetector(
-    context: Context,
+    private val context: Context,
     private val onShake: () -> Unit
 ) : SensorEventListener {
 
@@ -50,6 +52,22 @@ class ShakeDetector(
             val now = System.currentTimeMillis()
             if (now - lastShakeTime > shakeSlopTimeMs) {
                 lastShakeTime = now
+
+                // Let the background service know we shook, even if the activity is paused!
+                val intent = Intent(context, BackgroundDiscoveryService::class.java).apply {
+                    action = BackgroundDiscoveryService.ACTION_UPDATE_SHAKE
+                    putExtra(BackgroundDiscoveryService.EXTRA_SHAKE_TIMESTAMP, now)
+                }
+                try {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        context.startForegroundService(intent)
+                    } else {
+                        context.startService(intent)
+                    }
+                } catch (e: Exception) {
+                    // Service might not be running or permitted; handle gracefully
+                }
+
                 onShake()
             }
         }

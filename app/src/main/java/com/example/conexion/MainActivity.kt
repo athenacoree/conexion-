@@ -6,6 +6,9 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.net.wifi.p2p.WifiP2pInfo
+import android.content.BroadcastReceiver
+import android.content.Intent
+import android.content.IntentFilter
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
@@ -18,10 +21,12 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -63,6 +68,24 @@ class MainActivity : ComponentActivity() {
 
     // Shake state
     private var isShakeSearching = mutableStateOf(false)
+
+    // BLE background service state
+    private var isBgDiscoveryEnabled = mutableStateOf(false)
+
+    // Match discovered from background BLE scan
+    private var matchedBlePeer = mutableStateOf<BackgroundDiscoveryService.BlePeer?>(null)
+
+    private val bgServiceReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == BackgroundDiscoveryService.ACTION_PEER_FOUND) {
+                val name = intent.getStringExtra(BackgroundDiscoveryService.EXTRA_PEER_NAME) ?: "Dispositivo Cercano"
+                val mac = intent.getStringExtra(BackgroundDiscoveryService.EXTRA_PEER_MAC) ?: ""
+                val shake = intent.getLongExtra(BackgroundDiscoveryService.EXTRA_PEER_SHAKE, 0L)
+                Log.d(tag, "Received BLE peer match from background service: $name, $mac")
+                matchedBlePeer.value = BackgroundDiscoveryService.BlePeer(name, mac, shake)
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -109,6 +132,17 @@ class MainActivity : ComponentActivity() {
 
         toggleWifi(true)
 
+        // Register local broadcast receiver for match events
+        val bgFilter = IntentFilter(BackgroundDiscoveryService.ACTION_PEER_FOUND)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(bgServiceReceiver, bgFilter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(bgServiceReceiver, bgFilter)
+        }
+
+        // Handle possible launch intent from a match notification
+        handleIntent(intent)
+
         setContent {
             MaterialTheme {
                 Surface(
@@ -123,9 +157,31 @@ class MainActivity : ComponentActivity() {
         requestAllPermissions()
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIntent(intent)
+    }
+
+    private fun handleIntent(intent: Intent?) {
+        if (intent != null && intent.hasExtra(BackgroundDiscoveryService.EXTRA_PEER_NAME)) {
+            val name = intent.getStringExtra(BackgroundDiscoveryService.EXTRA_PEER_NAME) ?: "Dispositivo"
+            val mac = intent.getStringExtra(BackgroundDiscoveryService.EXTRA_PEER_MAC) ?: ""
+            val shake = intent.getLongExtra(BackgroundDiscoveryService.EXTRA_PEER_SHAKE, 0L)
+            Log.d(tag, "Handled launch intent with BLE match: $name ($mac)")
+            matchedBlePeer.value = BackgroundDiscoveryService.BlePeer(name, mac, shake)
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         shakeDetector.start()
+        // Synchronize with background service status if running
+        val prefs = getSharedPreferences("conexion_prefs", Context.MODE_PRIVATE)
+        isBgDiscoveryEnabled.value = prefs.getBoolean("bg_discovery_enabled", false)
+        if (isBgDiscoveryEnabled.value) {
+            startBgDiscoveryService()
+        }
     }
 
     override fun onPause() {
@@ -135,6 +191,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        try {
+            unregisterReceiver(bgServiceReceiver)
+        } catch (e: Exception) {
+            // ignore
+        }
         wifiP2pHelper.unregister()
         fileTransferManager.stopServer()
 
@@ -166,13 +227,57 @@ class MainActivity : ComponentActivity() {
             isShakeSearching.value = true
             Toast.makeText(this@MainActivity, "¡Agitado detectado! Buscando dispositivos cercanos...", Toast.LENGTH_SHORT).show()
 
+            // Update local Wi-Fi direct advertising & service discovery
             wifiP2pHelper.startAdvertisingShake(myNameState.value, currentShakeTime)
             wifiP2pHelper.startDiscovery()
+
+            // Also update foreground/background service if active
+            if (isBgDiscoveryEnabled.value) {
+                val serviceIntent = Intent(this@MainActivity, BackgroundDiscoveryService::class.java).apply {
+                    action = BackgroundDiscoveryService.ACTION_UPDATE_SHAKE
+                    putExtra(BackgroundDiscoveryService.EXTRA_USER_NAME, myNameState.value)
+                    putExtra(BackgroundDiscoveryService.EXTRA_WIFI_MAC, wifiP2pHelper.myDeviceAddress.ifEmpty { "00:00:00:00:00:00" })
+                    putExtra(BackgroundDiscoveryService.EXTRA_SHAKE_TIMESTAMP, currentShakeTime)
+                }
+                try {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        startForegroundService(serviceIntent)
+                    } else {
+                        startService(serviceIntent)
+                    }
+                } catch (e: Exception) {
+                    Log.e(tag, "Failed to update shake on background service", e)
+                }
+            }
 
             delay(15_000)
             wifiP2pHelper.stopDiscovery()
             isShakeSearching.value = false
         }
+    }
+
+    private fun startBgDiscoveryService() {
+        val serviceIntent = Intent(this, BackgroundDiscoveryService::class.java).apply {
+            action = BackgroundDiscoveryService.ACTION_START
+            putExtra(BackgroundDiscoveryService.EXTRA_USER_NAME, myNameState.value)
+            putExtra(BackgroundDiscoveryService.EXTRA_WIFI_MAC, wifiP2pHelper.myDeviceAddress.ifEmpty { "00:00:00:00:00:00" })
+        }
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(serviceIntent)
+            } else {
+                startService(serviceIntent)
+            }
+        } catch (e: Exception) {
+            Log.e(tag, "Failed to start background service", e)
+        }
+    }
+
+    private fun stopBgDiscoveryService() {
+        val serviceIntent = Intent(this, BackgroundDiscoveryService::class.java).apply {
+            action = BackgroundDiscoveryService.ACTION_STOP
+        }
+        stopService(serviceIntent)
     }
 
     private fun requestAllPermissions() {
@@ -182,9 +287,18 @@ class MainActivity : ComponentActivity() {
         )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissions.add(Manifest.permission.NEARBY_WIFI_DEVICES)
+            permissions.add(Manifest.permission.POST_NOTIFICATIONS)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             permissions.add(Manifest.permission.HIGH_SAMPLING_RATE_SENSORS)
+            permissions.add(Manifest.permission.BLUETOOTH_SCAN)
+            permissions.add(Manifest.permission.BLUETOOTH_ADVERTISE)
+            permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
+        } else {
+            @Suppress("DEPRECATION")
+            permissions.add(Manifest.permission.BLUETOOTH)
+            @Suppress("DEPRECATION")
+            permissions.add(Manifest.permission.BLUETOOTH_ADMIN)
         }
 
         val requestPermissionLauncher = registerForActivityResult(
@@ -233,7 +347,8 @@ class MainActivity : ComponentActivity() {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(16.dp),
+                .padding(16.dp)
+                .verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Top
         ) {
@@ -277,6 +392,48 @@ class MainActivity : ComponentActivity() {
                         keyboardActions = KeyboardActions(onDone = { keyboardController?.hide() }),
                         modifier = Modifier.fillMaxWidth()
                     )
+
+                    Spacer(modifier = Modifier.height(16.dp))
+                    HorizontalDivider()
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Búsqueda BLE en Segundo Plano",
+                                fontWeight = FontWeight.Bold,
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                            Text(
+                                text = "Encuentra dispositivos de forma pasiva con el teléfono bloqueado o cerrado.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.Gray
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Switch(
+                            checked = isBgDiscoveryEnabled.value,
+                            onCheckedChange = { isEnabled ->
+                                isBgDiscoveryEnabled.value = isEnabled
+                                getSharedPreferences("conexion_prefs", Context.MODE_PRIVATE)
+                                    .edit()
+                                    .putBoolean("bg_discovery_enabled", isEnabled)
+                                    .apply()
+
+                                if (isEnabled) {
+                                    startBgDiscoveryService()
+                                    Toast.makeText(context, "Búsqueda en segundo plano iniciada", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    stopBgDiscoveryService()
+                                    Toast.makeText(context, "Búsqueda en segundo plano detenida", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        )
+                    }
                 }
             }
 
@@ -445,6 +602,43 @@ class MainActivity : ComponentActivity() {
                             onClick = { connectionPromptPeer.value = null }
                         ) {
                             Text("Cancelar")
+                        }
+                    }
+                )
+            }
+
+            matchedBlePeer.value?.let { peer ->
+                AlertDialog(
+                    onDismissRequest = { matchedBlePeer.value = null },
+                    title = { Text("Coincidencia BLE Encontrada") },
+                    text = {
+                        Text(
+                            text = "Se ha detectado a ${peer.userName} en segundo plano.\n" +
+                                    "Ambos agitaron el dispositivo recientemente para conectar.",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                // Create a WifiP2pDevice and PeerInfo to initiate connection using existing Wi-Fi Direct framework
+                                val wifiDevice = android.net.wifi.p2p.WifiP2pDevice().apply {
+                                    deviceAddress = peer.wifiMac
+                                    deviceName = peer.userName
+                                }
+                                val p2pPeer = PeerInfo(wifiDevice, peer.userName, peer.shakeTimestamp)
+                                wifiP2pHelper.connectToPeer(p2pPeer)
+                                matchedBlePeer.value = null
+                            }
+                        ) {
+                            Text("Conectar Ahora")
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(
+                            onClick = { matchedBlePeer.value = null }
+                        ) {
+                            Text("Ignorar")
                         }
                     }
                 )
