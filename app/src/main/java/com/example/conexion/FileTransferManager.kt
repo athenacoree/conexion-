@@ -8,12 +8,15 @@ import android.provider.MediaStore
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CompletableDeferred
 import java.io.*
 import java.net.ServerSocket
 import java.net.Socket
 
 class FileTransferManager(
     private val context: Context,
+    private val onIncomingFileRequest: (fileName: String, fileSize: Long, onAccept: () -> Unit, onReject: () -> Unit) -> Unit,
+    private val onError: (String) -> Unit,
     private val onProgress: (fileName: String, bytesTransferred: Long, totalBytes: Long, isCompleted: Boolean) -> Unit
 ) {
     private val tag = "FileTransferManager"
@@ -46,6 +49,7 @@ class FileTransferManager(
             }
         } catch (e: Exception) {
             Log.e(tag, "Server error", e)
+            onError("Error en el servidor de transferencia de archivos: ${e.localizedMessage}")
         } finally {
             isServerRunning = false
         }
@@ -73,10 +77,30 @@ class FileTransferManager(
             val fileSize = dataInputStream.readLong()
             Log.d(tag, "Receiving file: $fileName, Size: $fileSize bytes")
 
+            // Request user confirmation on Main Thread
+            val confirmationDeferred = CompletableDeferred<Boolean>()
+            withContext(Dispatchers.Main) {
+                onIncomingFileRequest(
+                    fileName,
+                    fileSize,
+                    { confirmationDeferred.complete(true) },
+                    { confirmationDeferred.complete(false) }
+                )
+            }
+
+            val isAccepted = confirmationDeferred.await()
+            if (!isAccepted) {
+                Log.d(tag, "Incoming file rejected by user: $fileName")
+                onError("Transferencia rechazada: $fileName")
+                socket.close()
+                return@withContext
+            }
+
             // Create output URI in Downloads using MediaStore
             val outputStream = createDownloadOutputStream(fileName)
             if (outputStream == null) {
                 Log.e(tag, "Failed to create output stream for received file")
+                onError("Fallo al crear el archivo en Descargas. Verifica el espacio o permisos.")
                 socket.close()
                 return@withContext
             }
@@ -105,6 +129,7 @@ class FileTransferManager(
 
         } catch (e: Exception) {
             Log.e(tag, "Error during receiving file", e)
+            onError("Error al recibir archivo: ${e.localizedMessage}")
         }
     }
 
@@ -131,6 +156,7 @@ class FileTransferManager(
             val inputStream = context.contentResolver.openInputStream(fileUri)
             if (inputStream == null) {
                 Log.e(tag, "Could not open InputStream for Uri: $fileUri")
+                onError("No se pudo abrir el archivo seleccionado.")
                 socket.close()
                 return@withContext
             }
@@ -154,6 +180,7 @@ class FileTransferManager(
 
         } catch (e: Exception) {
             Log.e(tag, "Error sending file", e)
+            onError("Error al enviar archivo: ${e.localizedMessage}")
         } finally {
             try {
                 socket?.close()
