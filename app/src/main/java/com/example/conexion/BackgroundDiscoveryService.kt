@@ -18,23 +18,33 @@ import java.io.DataOutputStream
 import java.nio.ByteBuffer
 import java.util.UUID
 
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+
 class BackgroundDiscoveryService : Service() {
 
     private val tag = "BgDiscoveryService"
 
+    enum class BeaconState { IDLE, SENDING }
+
     companion object {
         const val ACTION_START = "com.example.conexion.ACTION_START"
-        const val ACTION_UPDATE_SHAKE = "com.example.conexion.ACTION_UPDATE_SHAKE"
         const val ACTION_STOP = "com.example.conexion.ACTION_STOP"
+
+        const val ACTION_SET_SENDING = "com.example.conexion.ACTION_SET_SENDING"
+        const val ACTION_CLEAR_SENDING = "com.example.conexion.ACTION_CLEAR_SENDING"
 
         const val EXTRA_USER_NAME = "EXTRA_USER_NAME"
         const val EXTRA_WIFI_MAC = "EXTRA_WIFI_MAC"
-        const val EXTRA_SHAKE_TIMESTAMP = "EXTRA_SHAKE_TIMESTAMP"
 
         const val ACTION_PEER_FOUND = "com.example.conexion.ACTION_PEER_FOUND"
+        const val ACTION_PEER_SENDING = "com.example.conexion.ACTION_PEER_SENDING"
+
         const val EXTRA_PEER_NAME = "EXTRA_PEER_NAME"
         const val EXTRA_PEER_MAC = "EXTRA_PEER_MAC"
-        const val EXTRA_PEER_SHAKE = "EXTRA_PEER_SHAKE"
         const val EXTRA_PEER_TOKEN = "EXTRA_PEER_TOKEN"
 
         private const val NOTIFICATION_ID = 1001
@@ -50,8 +60,13 @@ class BackgroundDiscoveryService : Service() {
 
     private var currentUserName = "Mi Dispositivo"
     private var currentWifiMac = "00:00:00:00:00:00"
-    private var currentShakeTime = 0L
     private var currentSessionToken = "000000000000"
+
+    private var currentBeaconState = BeaconState.IDLE
+    private var currentSendingToken = "000000000000"
+
+    private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
+    private var sendingTimeoutJob: Job? = null
 
     // Tracks peers to avoid showing duplicate notifications in a short window
     private val recentlyNotifiedPeers = mutableMapOf<String, Long>()
@@ -79,26 +94,50 @@ class BackgroundDiscoveryService : Service() {
         val mac = intent?.getStringExtra(EXTRA_WIFI_MAC)
         if (mac != null) currentWifiMac = mac
 
+        val incomingToken = intent?.getStringExtra(EXTRA_PEER_TOKEN)
+        if (incomingToken != null) {
+            currentSessionToken = incomingToken
+        }
+
         when (action) {
             ACTION_START -> {
                 startForegroundCompat()
                 startAdvertisingAndScanning()
             }
-            ACTION_UPDATE_SHAKE -> {
-                currentShakeTime = intent?.getLongExtra(EXTRA_SHAKE_TIMESTAMP, 0L) ?: 0L
-                currentSessionToken = intent?.getStringExtra(EXTRA_PEER_TOKEN) ?: "000000000000"
-                Log.d(tag, "Updating shake timestamp to: $currentShakeTime with token: $currentSessionToken")
+            ACTION_SET_SENDING -> {
+                sendingTimeoutJob?.cancel()
+                currentBeaconState = BeaconState.SENDING
+                val token = intent?.getStringExtra(EXTRA_PEER_TOKEN) ?: "000000000000"
+                currentSendingToken = token
+                Log.d(tag, "Setting state to SENDING with token: $currentSendingToken")
                 startForegroundCompat()
-                // Restart advertising with the updated payload containing the shake timestamp
                 startAdvertisingAndScanning()
+
+                sendingTimeoutJob = serviceScope.launch {
+                    delay(15_000)
+                    Log.d(tag, "Sending timeout reached, reverting to IDLE")
+                    revertToIdle()
+                }
+            }
+            ACTION_CLEAR_SENDING -> {
+                sendingTimeoutJob?.cancel()
+                revertToIdle()
             }
             ACTION_STOP -> {
+                sendingTimeoutJob?.cancel()
                 stopAdvertisingAndScanning()
                 stopSelf()
             }
         }
 
         return START_STICKY
+    }
+
+    private fun revertToIdle() {
+        currentBeaconState = BeaconState.IDLE
+        currentSendingToken = "000000000000"
+        startForegroundCompat()
+        startAdvertisingAndScanning()
     }
 
     private fun createNotificationChannel() {
@@ -124,10 +163,10 @@ class BackgroundDiscoveryService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val statusText = if (currentShakeTime > 0) {
-            "¡Teléfono agitado recientemente! Buscando coincidencias..."
+        val statusText = if (currentBeaconState == BeaconState.SENDING) {
+            "Transmitiendo baliza ultrasónica y BLE..."
         } else {
-            "Búsqueda pasiva activada. Agita para conectar de inmediato."
+            "Búsqueda pasiva activada. BLE en segundo plano."
         }
 
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
@@ -140,7 +179,12 @@ class BackgroundDiscoveryService : Service() {
             .build()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+            val serviceTypes = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            } else {
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+            }
+            startForeground(NOTIFICATION_ID, notification, serviceTypes)
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
@@ -171,19 +215,29 @@ class BackgroundDiscoveryService : Service() {
             stopAdvertisingAndScanningSilently()
 
             // 1. Start BLE Advertising
+            val advMode = if (currentBeaconState == BeaconState.SENDING) {
+                AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY
+            } else {
+                AdvertiseSettings.ADVERTISE_MODE_BALANCED
+            }
+
             val advSettings = AdvertiseSettings.Builder()
-                .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
+                .setAdvertiseMode(advMode)
                 .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
                 .setConnectable(false)
                 .build()
 
-            val payload = buildManufacturerData(currentShakeTime, currentSessionToken, currentUserName)
+            val payload = buildManufacturerData(
+                state = if (currentBeaconState == BeaconState.SENDING) 1 else 0,
+                sessionToken = if (currentBeaconState == BeaconState.SENDING) currentSendingToken else currentSessionToken,
+                userName = currentUserName
+            )
             val advData = AdvertiseData.Builder()
                 .addManufacturerData(MANUFACTURER_ID, payload)
                 .build()
 
             advertiser?.startAdvertising(advSettings, advData, advertiseCallback)
-            Log.d(tag, "Started BLE Advertising with payload size: ${payload.size} bytes")
+            Log.d(tag, "Started BLE Advertising in state $currentBeaconState with payload size: ${payload.size} bytes")
 
             // 2. Start BLE Scanning
             // Match any payload from our manufacturer ID using setManufacturerData with non-null masks
@@ -191,12 +245,18 @@ class BackgroundDiscoveryService : Service() {
                 .setManufacturerData(MANUFACTURER_ID, byteArrayOf(0), byteArrayOf(0))
                 .build()
 
+            val scanMode = if (currentBeaconState == BeaconState.SENDING) {
+                ScanSettings.SCAN_MODE_LOW_LATENCY
+            } else {
+                ScanSettings.SCAN_MODE_BALANCED
+            }
+
             val scanSettings = ScanSettings.Builder()
-                .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+                .setScanMode(scanMode)
                 .build()
 
             scanner?.startScan(listOf(scanFilter), scanSettings, scanCallback)
-            Log.d(tag, "Started BLE Scanning")
+            Log.d(tag, "Started BLE Scanning in mode $currentBeaconState")
 
         } catch (e: Exception) {
             Log.e(tag, "Failed to start advertising or scanning", e)
@@ -281,28 +341,26 @@ class BackgroundDiscoveryService : Service() {
         if (peer.sessionToken == currentSessionToken && currentSessionToken != "000000000000") {
             return
         }
+        if (peer.sessionToken == currentSendingToken && currentSendingToken != "000000000000") {
+            return
+        }
 
-        // Check if both devices have a recent shake within 15 seconds of each other
-        val timeDiff = Math.abs(currentShakeTime - peer.shakeTimestamp)
-        Log.d(tag, "Discovered BLE peer: name=${peer.userName}, token=${peer.sessionToken}, shakeTime=${peer.shakeTimestamp}, diff=${timeDiff / 1000}s")
+        Log.d(tag, "Discovered BLE peer: name=${peer.userName}, token=${peer.sessionToken}, state=${peer.state}")
 
-        if (currentShakeTime > 0 && peer.shakeTimestamp > 0 && timeDiff < 15_000) {
-            // We have a match! Let's notify and connect
+        if (peer.state == 1) { // Peer is SENDING
             val lastNotified = recentlyNotifiedPeers[peer.sessionToken] ?: 0L
             if (now - lastNotified > 10_000) { // Throttle duplicate notifications (10 seconds)
                 recentlyNotifiedPeers[peer.sessionToken] = now
-                Log.d(tag, "MATCH DETECTED with peer: ${peer.userName} (${peer.sessionToken})")
+                Log.d(tag, "PEER SENDING DETECTED: ${peer.userName} (${peer.sessionToken})")
 
-                // 1. Broadcast the match to MainActivity
-                val intent = Intent(ACTION_PEER_FOUND).apply {
+                // 1. Broadcast the PEER_SENDING to MainActivity to trigger the microphone
+                val intent = Intent(ACTION_PEER_SENDING).apply {
                     putExtra(EXTRA_PEER_NAME, peer.userName)
-                    putExtra(EXTRA_PEER_MAC, "") // No longer passing plain Wi-Fi MAC
                     putExtra(EXTRA_PEER_TOKEN, peer.sessionToken)
-                    putExtra(EXTRA_PEER_SHAKE, peer.shakeTimestamp)
                 }
                 sendBroadcast(intent)
 
-                // 2. Show a high priority heads-up notification so they can connect even outside the app
+                // 2. Show a notification
                 showMatchNotification(peer)
             }
         }
@@ -313,7 +371,6 @@ class BackgroundDiscoveryService : Service() {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra(EXTRA_PEER_NAME, peer.userName)
             putExtra(EXTRA_PEER_TOKEN, peer.sessionToken)
-            putExtra(EXTRA_PEER_SHAKE, peer.shakeTimestamp)
         }
         val pendingIntent = PendingIntent.getActivity(
             this, 1, intent,
@@ -321,8 +378,8 @@ class BackgroundDiscoveryService : Service() {
         )
 
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("¡Dispositivo Cercano Encontrado!")
-            .setContentText("Toca para conectarte de forma segura con ${peer.userName}")
+            .setContentTitle("¡Dispositivo Cercano Compartiendo!")
+            .setContentText("Toca para recibir de forma segura de ${peer.userName}")
             .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setDefaults(NotificationCompat.DEFAULT_ALL)
@@ -334,10 +391,10 @@ class BackgroundDiscoveryService : Service() {
         manager.notify(MATCH_NOTIFICATION_ID, notification)
     }
 
-    private fun buildManufacturerData(shakeTime: Long, sessionToken: String, userName: String): ByteArray {
+    private fun buildManufacturerData(state: Int, sessionToken: String, userName: String): ByteArray {
         val stream = ByteArrayOutputStream()
         val dos = DataOutputStream(stream)
-        dos.writeLong(shakeTime) // 8 bytes
+        dos.writeByte(state) // 1 byte state (0 = IDLE, 1 = SENDING)
 
         // Write Session Token (6 bytes hex represented by 12 chars string, convert to 6 bytes payload)
         val tokenBytes = ByteArray(6)
@@ -360,23 +417,23 @@ class BackgroundDiscoveryService : Service() {
     }
 
     private fun parseManufacturerData(data: ByteArray): BlePeer? {
-        if (data.size < 14) return null
+        if (data.size < 7) return null // 1 byte state + 6 bytes token = 7 bytes minimum check
         return try {
             val buffer = ByteBuffer.wrap(data)
-            val shakeTime = buffer.long
+            val state = buffer.get().toInt()
 
             val tokenBytes = ByteArray(6)
             buffer.get(tokenBytes)
             val sessionToken = tokenBytes.joinToString("") { String.format("%02X", it) }
 
-            val nameBytes = ByteArray(data.size - 14)
+            val nameBytes = ByteArray(data.size - 7)
             buffer.get(nameBytes)
             val userName = String(nameBytes, Charsets.UTF_8).trim()
 
             BlePeer(
                 userName = if (userName.isEmpty()) "Usuario BLE" else userName,
                 sessionToken = sessionToken,
-                shakeTimestamp = shakeTime
+                state = state
             )
         } catch (e: Exception) {
             Log.e(tag, "Failed to parse manufacturer data", e)
@@ -387,6 +444,6 @@ class BackgroundDiscoveryService : Service() {
     data class BlePeer(
         val userName: String,
         val sessionToken: String,
-        val shakeTimestamp: Long
+        val state: Int
     )
 }
