@@ -20,7 +20,6 @@ import kotlinx.coroutines.*
 data class PeerInfo(
     val device: WifiP2pDevice,
     val userName: String,
-    val shakeTimestamp: Long,
     val sessionToken: String = ""
 )
 
@@ -50,13 +49,11 @@ class WifiP2pHelper(
     private val tokenToPeerMap = mutableMapOf<String, PeerInfo>()
     private var pendingTargetToken: String? = null
     private var pendingTargetName: String? = null
-    private var pendingTargetShake: Long = 0L
 
     private var localServiceInfo: WifiP2pDnsSdServiceInfo? = null
     private var serviceRequest: WifiP2pDnsSdServiceRequest? = null
 
     var myDeviceName: String = "Usuario"
-    private var myShakeTime: Long = 0
     var myDeviceAddress: String = ""
 
     fun findPeerByToken(token: String): PeerInfo? {
@@ -64,10 +61,9 @@ class WifiP2pHelper(
         return tokenToPeerMap[token]
     }
 
-    fun startDiscoveryForToken(token: String, userName: String, shakeTime: Long) {
+    fun startDiscoveryForToken(token: String, userName: String) {
         pendingTargetToken = token
         pendingTargetName = userName
-        pendingTargetShake = shakeTime
         startDiscovery()
     }
 
@@ -158,16 +154,14 @@ class WifiP2pHelper(
     }
 
     @SuppressLint("MissingPermission")
-    fun startAdvertisingShake(userName: String, shakeTime: Long, sessionToken: String) {
+    fun startAdvertising(userName: String, sessionToken: String) {
         if (manager == null || channel == null) return
-        myShakeTime = shakeTime
         setDeviceName(userName)
 
         manager.clearLocalServices(channel, object : WifiP2pManager.ActionListener {
             override fun onSuccess() {
                 val record = mapOf(
                     "name" to userName,
-                    "shake" to shakeTime.toString(),
                     "token" to sessionToken
                 )
                 localServiceInfo = WifiP2pDnsSdServiceInfo.newInstance(
@@ -203,27 +197,19 @@ class WifiP2pHelper(
             { _, txtRecordMap, srcDevice ->
                 Log.d(tag, "TXT record received: $txtRecordMap from ${srcDevice.deviceAddress}")
                 val name = txtRecordMap["name"] ?: "Usuario Desconocido"
-                val shakeStr = txtRecordMap["shake"]
-                val shakeTime = shakeStr?.toLongOrNull() ?: 0L
                 val token = txtRecordMap["token"] ?: ""
 
-                val timeDifference = Math.abs(myShakeTime - shakeTime)
-                Log.d(tag, "Discovered device shake timestamp diff: ${timeDifference / 1000} seconds")
-
-                if (timeDifference < 15_000 && shakeTime != 0L) {
-                    val peer = PeerInfo(srcDevice, name, shakeTime, token)
+                if (token.isNotEmpty()) {
+                    val peer = PeerInfo(srcDevice, name, token)
                     discoveredServicePeers[srcDevice.deviceAddress] = peer
-                    if (token.isNotEmpty()) {
-                        tokenToPeerMap[token] = peer
-                    }
+                    tokenToPeerMap[token] = peer
                     onPeersDiscovered(discoveredServicePeers.values.toList())
 
+                    // TAREA 6 & Code Review feedback: We must NOT connect automatically nor show premature connection prompts
+                    // without explicit ultrasonic/manual validation flow context.
+                    // Instead of connecting or prompt immediately, we let the ultrasonic decode match trigger connection prompt.
                     if (pendingTargetToken != null && pendingTargetToken == token) {
-                        Log.d(tag, "Found pending target token $token. Connecting now.")
-                        pendingTargetToken = null
-                        connectToPeer(peer)
-                    } else if (myShakeTime > 0 && shakeTime > 0) {
-                        onConnectionRequestReceived(peer)
+                        Log.d(tag, "Discovered service record matching target token: $token")
                     }
                 }
             }

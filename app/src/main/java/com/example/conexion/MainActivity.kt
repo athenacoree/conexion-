@@ -49,9 +49,11 @@ class MainActivity : ComponentActivity() {
 
     private val tag = "MainActivity"
 
-    private lateinit var shakeDetector: ShakeDetector
     private lateinit var wifiP2pHelper: WifiP2pHelper
     private lateinit var fileTransferManager: FileTransferManager
+
+    private var audioBeaconEmitter: AudioBeaconEmitter? = null
+    private var audioBeaconListener: AudioBeaconListener? = null
 
     // App state observables
     private var isWifiEnabledState = mutableStateOf(false)
@@ -66,9 +68,6 @@ class MainActivity : ComponentActivity() {
     private var isTransferring = mutableStateOf(false)
     private var isTransferCompleted = mutableStateOf(false)
 
-    // Shake state
-    private var isShakeSearching = mutableStateOf(false)
-
     // BLE background service state
     private var isBgDiscoveryEnabled = mutableStateOf(false)
 
@@ -80,6 +79,9 @@ class MainActivity : ComponentActivity() {
 
     // Incoming file dialog state
     private var incomingFileRequest = mutableStateOf<IncomingFilePrompt?>(null)
+
+    // Pending Uris from Share Sheet (TAREA 2)
+    private var pendingShareUris = mutableStateOf<List<Uri>>(emptyList())
 
     data class IncomingFilePrompt(
         val fileName: String,
@@ -93,20 +95,21 @@ class MainActivity : ComponentActivity() {
             if (intent?.action == BackgroundDiscoveryService.ACTION_PEER_FOUND) {
                 val name = intent.getStringExtra(BackgroundDiscoveryService.EXTRA_PEER_NAME) ?: "Dispositivo Cercano"
                 val token = intent.getStringExtra(BackgroundDiscoveryService.EXTRA_PEER_TOKEN) ?: "000000000000"
-                val shake = intent.getLongExtra(BackgroundDiscoveryService.EXTRA_PEER_SHAKE, 0L)
+                val state = intent.getIntExtra("EXTRA_PEER_STATE", 0)
                 Log.d(tag, "Received BLE peer match from background service: $name, token=$token")
-                matchedBlePeer.value = BackgroundDiscoveryService.BlePeer(name, token, shake)
+                matchedBlePeer.value = BackgroundDiscoveryService.BlePeer(name, token, state)
+            } else if (intent?.action == BackgroundDiscoveryService.ACTION_PEER_SENDING) {
+                val name = intent.getStringExtra(BackgroundDiscoveryService.EXTRA_PEER_NAME) ?: "Dispositivo Emisor"
+                val token = intent.getStringExtra(BackgroundDiscoveryService.EXTRA_PEER_TOKEN) ?: "000000000000"
+                Log.d(tag, "Received BLE peer sending from background service: $name, token=$token")
+                // Start listening to the beacon! (TAREA 5)
+                audioBeaconListener?.start(token)
             }
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        // Initialize helper classes
-        shakeDetector = ShakeDetector(this) {
-            handleShake()
-        }
 
         wifiP2pHelper = WifiP2pHelper(
             context = this,
@@ -136,6 +139,22 @@ class MainActivity : ComponentActivity() {
             }
         )
 
+        audioBeaconEmitter = AudioBeaconEmitter()
+        audioBeaconListener = AudioBeaconListener { token ->
+            runOnUiThread {
+                Toast.makeText(this, "¡Tono ultrasónico válido detectado!", Toast.LENGTH_LONG).show()
+                // Resolved the sender via DNS-SD/BLE using token (TAREA 6)
+                val peer = wifiP2pHelper.findPeerByToken(token)
+                if (peer != null) {
+                    connectionPromptPeer.value = peer
+                } else {
+                    // Try to discover secure network address for token
+                    Toast.makeText(this, "Buscando información de red para el emisor...", Toast.LENGTH_SHORT).show()
+                    wifiP2pHelper.startDiscoveryForToken(token, "Dispositivo ultrasónico")
+                }
+            }
+        }
+
         fileTransferManager = FileTransferManager(
             context = this,
             onIncomingFileRequest = { fileName, fileSize, onAccept, onReject ->
@@ -161,8 +180,11 @@ class MainActivity : ComponentActivity() {
 
         toggleWifi(true)
 
-        // Register local broadcast receiver for match events
-        val bgFilter = IntentFilter(BackgroundDiscoveryService.ACTION_PEER_FOUND)
+        // Register local broadcast receiver for match and peer sending events
+        val bgFilter = IntentFilter().apply {
+            addAction(BackgroundDiscoveryService.ACTION_PEER_FOUND)
+            addAction(BackgroundDiscoveryService.ACTION_PEER_SENDING)
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(bgServiceReceiver, bgFilter, Context.RECEIVER_NOT_EXPORTED)
         } else {
@@ -171,6 +193,7 @@ class MainActivity : ComponentActivity() {
 
         // Handle possible launch intent from a match notification
         handleIntent(intent)
+        handleShareIntent(intent)
 
         setContent {
             MaterialTheme {
@@ -190,21 +213,39 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleIntent(intent)
+        handleShareIntent(intent)
     }
 
     private fun handleIntent(intent: Intent?) {
         if (intent != null && intent.hasExtra(BackgroundDiscoveryService.EXTRA_PEER_NAME)) {
             val name = intent.getStringExtra(BackgroundDiscoveryService.EXTRA_PEER_NAME) ?: "Dispositivo"
             val token = intent.getStringExtra(BackgroundDiscoveryService.EXTRA_PEER_TOKEN) ?: "000000000000"
-            val shake = intent.getLongExtra(BackgroundDiscoveryService.EXTRA_PEER_SHAKE, 0L)
+            val state = intent.getIntExtra("EXTRA_PEER_STATE", 0)
             Log.d(tag, "Handled launch intent with BLE match: $name, token=$token")
-            matchedBlePeer.value = BackgroundDiscoveryService.BlePeer(name, token, shake)
+            matchedBlePeer.value = BackgroundDiscoveryService.BlePeer(name, token, state)
+        }
+    }
+
+    private fun handleShareIntent(intent: Intent?) {
+        if (intent == null) return
+        val action = intent.action
+        val type = intent.type
+        Log.d(tag, "handleShareIntent action: $action, type: $type")
+        if (Intent.ACTION_SEND == action && type != null) {
+            intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)?.let { uri ->
+                pendingShareUris.value = listOf(uri)
+                Log.d(tag, "Shared single Uri: $uri")
+            }
+        } else if (Intent.ACTION_SEND_MULTIPLE == action && type != null) {
+            intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)?.let { uris ->
+                pendingShareUris.value = uris
+                Log.d(tag, "Shared multiple Uris: ${uris.size}")
+            }
         }
     }
 
     override fun onResume() {
         super.onResume()
-        shakeDetector.start()
         // Sync WiFi state
         val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
         wifiManager?.let {
@@ -220,7 +261,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onPause() {
         super.onPause()
-        shakeDetector.stop()
     }
 
     override fun onDestroy() {
@@ -260,48 +300,6 @@ class MainActivity : ComponentActivity() {
             .joinToString("")
     }
 
-    private fun handleShake() {
-        if (isShakeSearching.value) return
-        val currentShakeTime = System.currentTimeMillis()
-        currentSessionToken = generateSessionToken()
-
-        lifecycleScope.launch {
-            isShakeSearching.value = true
-            Toast.makeText(this@MainActivity, "¡Agitado detectado! Buscando dispositivos cercanos...", Toast.LENGTH_SHORT).show()
-
-            // Update local Wi-Fi direct advertising & service discovery
-            wifiP2pHelper.startAdvertisingShake(myNameState.value, currentShakeTime, currentSessionToken)
-            wifiP2pHelper.startDiscovery()
-
-            // Also update foreground/background service if active
-            if (isBgDiscoveryEnabled.value) {
-                val serviceIntent = Intent(this@MainActivity, BackgroundDiscoveryService::class.java).apply {
-                    action = BackgroundDiscoveryService.ACTION_UPDATE_SHAKE
-                    putExtra(BackgroundDiscoveryService.EXTRA_USER_NAME, myNameState.value)
-                    putExtra(BackgroundDiscoveryService.EXTRA_WIFI_MAC, wifiP2pHelper.myDeviceAddress.ifEmpty { "00:00:00:00:00:00" })
-                    putExtra(BackgroundDiscoveryService.EXTRA_SHAKE_TIMESTAMP, currentShakeTime)
-                    putExtra(BackgroundDiscoveryService.EXTRA_PEER_TOKEN, currentSessionToken)
-                }
-                try {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        startForegroundService(serviceIntent)
-                    } else {
-                        startService(serviceIntent)
-                    }
-                } catch (e: Exception) {
-                    Log.e(tag, "Failed to update shake on background service", e)
-                }
-            }
-
-            delay(15_000)
-            wifiP2pHelper.stopDiscovery()
-            isShakeSearching.value = false
-            // Show feedback toast if no peers were discovered
-            if (peersState.value.isEmpty()) {
-                Toast.makeText(this@MainActivity, "No se encontró a nadie cerca. Intenta agitar de nuevo cuando estén juntos.", Toast.LENGTH_LONG).show()
-            }
-        }
-    }
 
     private fun startBgDiscoveryService() {
         val serviceIntent = Intent(this, BackgroundDiscoveryService::class.java).apply {
@@ -330,14 +328,14 @@ class MainActivity : ComponentActivity() {
     private fun requestAllPermissions() {
         val permissions = mutableListOf(
             Manifest.permission.ACCESS_FINE_LOCATION,
-            Manifest.permission.ACCESS_COARSE_LOCATION
+            Manifest.permission.ACCESS_COARSE_LOCATION,
+            Manifest.permission.RECORD_AUDIO
         )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissions.add(Manifest.permission.NEARBY_WIFI_DEVICES)
             permissions.add(Manifest.permission.POST_NOTIFICATIONS)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            permissions.add(Manifest.permission.HIGH_SAMPLING_RATE_SENSORS)
             permissions.add(Manifest.permission.BLUETOOTH_SCAN)
             permissions.add(Manifest.permission.BLUETOOTH_ADVERTISE)
             permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
@@ -523,45 +521,90 @@ class MainActivity : ComponentActivity() {
 
             Spacer(modifier = Modifier.height(24.dp))
 
-            Box(
-                modifier = Modifier
-                    .size(160.dp)
-                    .clip(CircleShape)
-                    .background(
-                        if (isShakeSearching.value) MaterialTheme.colorScheme.primaryContainer
-                        else MaterialTheme.colorScheme.secondaryContainer
-                    )
-                    .border(
-                        2.dp,
-                        if (isShakeSearching.value) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.secondary,
-                        CircleShape
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    if (isShakeSearching.value) {
-                        CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
-                        Spacer(modifier = Modifier.height(8.dp))
+            // TAREA 4 — Botón de envío manual + integración con el share sheet
+            val showShareDialog = pendingShareUris.value.isNotEmpty()
+            if (showShareDialog) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
                         Text(
-                            text = "Buscando...",
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Bold
+                            text = "Enviar a dispositivo cercano",
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
                         )
-                    } else {
+                        Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "¡AGITA!",
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Black,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer
-                        )
-                        Text(
-                            text = "para conectar",
+                            text = "${pendingShareUris.value.size} archivo(s) listo(s) para compartir.",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
                         )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Row(
+                            horizontalArrangement = Arrangement.SpaceEvenly,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Button(
+                                onClick = {
+                                    val token = generateSessionToken()
+                                    currentSessionToken = token
+
+                                    // Send Intent to BackgroundDiscoveryService to initiate SENDING mode
+                                    val serviceIntent = Intent(context, BackgroundDiscoveryService::class.java).apply {
+                                        action = BackgroundDiscoveryService.ACTION_SET_SENDING
+                                        putExtra(BackgroundDiscoveryService.EXTRA_PEER_TOKEN, token)
+                                        putExtra(BackgroundDiscoveryService.EXTRA_USER_NAME, myNameState.value)
+                                    }
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                        context.startForegroundService(serviceIntent)
+                                    } else {
+                                        context.startService(serviceIntent)
+                                    }
+
+                                    // Start Audio Beacon Emitter
+                                    audioBeaconEmitter?.start(token)
+
+                                    // Start local Wi-Fi Direct presence advertising and discovery
+                                    wifiP2pHelper.startAdvertising(myNameState.value, token)
+                                    wifiP2pHelper.startDiscovery()
+
+                                    Toast.makeText(context, "Transmitiendo y buscando receptores...", Toast.LENGTH_SHORT).show()
+                                }
+                            ) {
+                                Text("Buscar y enviar")
+                            }
+
+                            TextButton(
+                                onClick = {
+                                    pendingShareUris.value = emptyList()
+                                }
+                            ) {
+                                Text("Cancelar", color = MaterialTheme.colorScheme.onPrimaryContainer)
+                            }
+                        }
                     }
                 }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Manual fallback button "Buscar dispositivos ahora"
+            Button(
+                onClick = {
+                    wifiP2pHelper.startDiscovery()
+                    Toast.makeText(context, "Buscando dispositivos Wi-Fi Direct manualmente...", Toast.LENGTH_SHORT).show()
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Buscar dispositivos ahora (Manual)")
             }
 
             Spacer(modifier = Modifier.height(24.dp))
@@ -666,26 +709,38 @@ class MainActivity : ComponentActivity() {
                     title = { Text("Conexión Detectada") },
                     text = {
                         Text(
-                            text = "¿Te vas a conectar con ${peer.userName}?\n" +
-                                    "Ambos agitaron el teléfono cerca en el mismo instante.",
+                            text = "¿Deseas aceptar la transferencia y conectarte con ${peer.userName}?",
                             style = MaterialTheme.typography.bodyMedium
                         )
                     },
                     confirmButton = {
                         Button(
                             onClick = {
+                                val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+                                if (wifiManager?.isWifiEnabled != true) {
+                                    // Wi-Fi is disabled, prompt user with ACTION_INTERNET_CONNECTIVITY panel as required by TAREA 6
+                                    try {
+                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                            context.startActivity(Intent(android.provider.Settings.Panel.ACTION_INTERNET_CONNECTIVITY))
+                                        } else {
+                                            context.startActivity(Intent(android.provider.Settings.ACTION_WIFI_SETTINGS))
+                                        }
+                                    } catch (e: Exception) {
+                                        Toast.makeText(context, "Por favor, enciende el Wi-Fi para continuar.", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
                                 wifiP2pHelper.connectToPeer(peer)
                                 connectionPromptPeer.value = null
                             }
                         ) {
-                            Text("Sí, Conectar")
+                            Text("Sí, Conectar y Aceptar")
                         }
                     },
                     dismissButton = {
                         TextButton(
                             onClick = { connectionPromptPeer.value = null }
                         ) {
-                            Text("Cancelar")
+                            Text("Rechazar")
                         }
                     }
                 )
@@ -697,8 +752,7 @@ class MainActivity : ComponentActivity() {
                     title = { Text("Coincidencia BLE Encontrada") },
                     text = {
                         Text(
-                            text = "Se ha detectado a ${peer.userName} en segundo plano.\n" +
-                                    "Ambos agitaron el dispositivo recientemente para conectar.",
+                            text = "Se ha detectado a ${peer.userName} en segundo plano.",
                             style = MaterialTheme.typography.bodyMedium
                         )
                     },
@@ -712,7 +766,7 @@ class MainActivity : ComponentActivity() {
                                 } else {
                                     // Peer MAC not resolved yet. Trigger WifiP2p service discovery to find and connect to peer automatically
                                     Toast.makeText(context, "Buscando dirección de red segura...", Toast.LENGTH_SHORT).show()
-                                    wifiP2pHelper.startDiscoveryForToken(peer.sessionToken, peer.userName, peer.shakeTimestamp)
+                                    wifiP2pHelper.startDiscoveryForToken(peer.sessionToken, peer.userName)
                                 }
                                 matchedBlePeer.value = null
                             }

@@ -109,15 +109,24 @@ class FileTransferManager(
             var bytesRead: Int
             var totalBytesRead = 0L
 
-            while (totalBytesRead < fileSize) {
-                val remaining = (fileSize - totalBytesRead).coerceAtMost(buffer.size.toLong()).toInt()
-                bytesRead = dataInputStream.read(buffer, 0, remaining)
-                if (bytesRead == -1) break
+            if (fileSize == -1L) {
+                // If fileSize is -1L, read until EOF (bytesRead == -1) as requested by TAREA 7
+                while (dataInputStream.read(buffer).also { bytesRead = it } != -1) {
+                    outputStream.write(buffer, 0, bytesRead)
+                    totalBytesRead += bytesRead.toLong()
+                    onProgress(fileName, totalBytesRead, -1L, false)
+                }
+            } else {
+                while (totalBytesRead < fileSize) {
+                    val remaining = (fileSize - totalBytesRead).coerceAtMost(buffer.size.toLong()).toInt()
+                    bytesRead = dataInputStream.read(buffer, 0, remaining)
+                    if (bytesRead == -1) break
 
-                outputStream.write(buffer, 0, bytesRead)
-                totalBytesRead += bytesRead.toLong()
+                    outputStream.write(buffer, 0, bytesRead)
+                    totalBytesRead += bytesRead.toLong()
 
-                onProgress(fileName, totalBytesRead, fileSize, false)
+                    onProgress(fileName, totalBytesRead, fileSize, false)
+                }
             }
 
             outputStream.flush()
@@ -219,13 +228,16 @@ class FileTransferManager(
     }
 
     private fun getFileSizeFromUri(uri: Uri): Long {
-        var size = 0L
+        var size = -1L
         val cursor = context.contentResolver.query(uri, null, null, null, null)
         cursor?.use {
             if (it.moveToFirst()) {
                 val index = it.getColumnIndex(MediaStore.MediaColumns.SIZE)
                 if (index != -1) {
-                    size = it.getLong(index)
+                    val resolvedSize = it.getLong(index)
+                    if (resolvedSize > 0L) {
+                        size = resolvedSize
+                    }
                 }
             }
         }
