@@ -1,0 +1,269 @@
+package com.example.conexion
+
+import android.annotation.SuppressLint
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.net.wifi.p2p.WifiP2pConfig
+import android.net.wifi.p2p.WifiP2pDevice
+import android.net.wifi.p2p.WifiP2pInfo
+import android.net.wifi.p2p.WifiP2pManager
+import android.net.wifi.p2p.nsd.WifiP2pDnsSdServiceInfo
+import android.net.wifi.p2p.nsd.WifiP2pDnsSdServiceRequest
+import android.os.Build
+import android.os.Looper
+import android.util.Log
+import androidx.core.content.ContextCompat
+import java.lang.reflect.Method
+
+data class PeerInfo(
+    val device: WifiP2pDevice,
+    val userName: String,
+    val shakeTimestamp: Long
+)
+
+class WifiP2pHelper(
+    private val context: Context,
+    private val onConnectionChanged: (WifiP2pInfo?) -> Unit,
+    private val onPeersDiscovered: (List<PeerInfo>) -> Unit,
+    private val onConnectionRequestReceived: (PeerInfo) -> Unit
+) {
+    private val tag = "WifiP2pHelper"
+
+    val manager: WifiP2pManager? = context.getSystemService(Context.WIFI_P2P_SERVICE) as? WifiP2pManager
+    var channel: WifiP2pManager.Channel? = manager?.initialize(context, Looper.getMainLooper(), null)
+
+    private var receiver: WifiDirectBroadcastReceiver? = null
+    private val intentFilter = IntentFilter().apply {
+        addAction(WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION)
+        addAction(WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION)
+        addAction(WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION)
+        addAction(WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION)
+    }
+
+    private val discoveredServicePeers = mutableMapOf<String, PeerInfo>()
+    private var localServiceInfo: WifiP2pDnsSdServiceInfo? = null
+    private var serviceRequest: WifiP2pDnsSdServiceRequest? = null
+
+    var myDeviceName: String = "Usuario"
+    private var myShakeTime: Long = 0
+    var myDeviceAddress: String = ""
+
+    init {
+        setupBroadcastReceiver()
+    }
+
+    private fun setupBroadcastReceiver() {
+        receiver = WifiDirectBroadcastReceiver()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            context.registerReceiver(receiver, intentFilter, Context.RECEIVER_EXPORTED)
+        } else {
+            context.registerReceiver(receiver, intentFilter)
+        }
+    }
+
+    private inner class WifiDirectBroadcastReceiver : android.content.BroadcastReceiver() {
+        @SuppressLint("MissingPermission")
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION -> {
+                    val state = intent.getIntExtra(WifiP2pManager.EXTRA_WIFI_STATE, -1)
+                    Log.d(tag, "Wi-Fi P2P State Changed: $state")
+                }
+                WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION -> {
+                    Log.d(tag, "Wi-Fi P2P Peers Changed")
+                }
+                WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> {
+                    val networkInfo = intent.getParcelableExtra<android.net.NetworkInfo>(WifiP2pManager.EXTRA_NETWORK_INFO)
+                    Log.d(tag, "Connection changed: isConnected = ${networkInfo?.isConnected}")
+                    if (networkInfo?.isConnected == true) {
+                        manager?.requestConnectionInfo(channel) { info ->
+                            Log.d(tag, "Connection Info Received: Group Owner = ${info.isGroupOwner}, Address = ${info.groupOwnerAddress}")
+                            onConnectionChanged(info)
+                        }
+                    } else {
+                        onConnectionChanged(null)
+                    }
+                }
+                WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION -> {
+                    val device = intent.getParcelableExtra<WifiP2pDevice>(WifiP2pManager.EXTRA_WIFI_P2P_DEVICE)
+                    device?.let {
+                        myDeviceAddress = it.deviceAddress
+                        Log.d(tag, "This Device Changed: name = ${it.deviceName}, address = ${it.deviceAddress}")
+                    }
+                }
+            }
+        }
+    }
+
+    fun unregister() {
+        try {
+            receiver?.let { context.unregisterReceiver(it) }
+        } catch (e: Exception) {
+            Log.e(tag, "Error unregistering receiver", e)
+        }
+        stopDiscovery()
+    }
+
+    fun setDeviceName(name: String) {
+        myDeviceName = name
+        if (manager == null || channel == null) return
+        try {
+            val method: Method = manager.javaClass.getMethod(
+                "setDeviceName",
+                WifiP2pManager.Channel::class.java,
+                String::class.java,
+                WifiP2pManager.ActionListener::class.java
+            )
+            method.invoke(manager, channel, name, object : WifiP2pManager.ActionListener {
+                override fun onSuccess() {
+                    Log.d(tag, "Successfully changed Wi-Fi Direct device name to: $name")
+                }
+                override fun onFailure(reason: Int) {
+                    Log.e(tag, "Failed to change Wi-Fi Direct device name: $reason")
+                }
+            })
+        } catch (e: Exception) {
+            Log.e(tag, "Reflection failed to change device name", e)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    fun startAdvertisingShake(userName: String, shakeTime: Long) {
+        if (manager == null || channel == null) return
+        myShakeTime = shakeTime
+        setDeviceName(userName)
+
+        manager.clearLocalServices(channel, object : WifiP2pManager.ActionListener {
+            override fun onSuccess() {
+                val record = mapOf(
+                    "name" to userName,
+                    "shake" to shakeTime.toString()
+                )
+                localServiceInfo = WifiP2pDnsSdServiceInfo.newInstance(
+                    "_conexion",
+                    "_presence._tcp",
+                    record
+                )
+                manager.addLocalService(channel, localServiceInfo, object : WifiP2pManager.ActionListener {
+                    override fun onSuccess() {
+                        Log.d(tag, "Local service registered: $record")
+                    }
+                    override fun onFailure(reason: Int) {
+                        Log.e(tag, "Failed to add local service: $reason")
+                    }
+                })
+            }
+            override fun onFailure(reason: Int) {
+                Log.e(tag, "Failed to clear local services: $reason")
+            }
+        })
+    }
+
+    @SuppressLint("MissingPermission")
+    fun startDiscovery() {
+        if (manager == null || channel == null) return
+
+        discoveredServicePeers.clear()
+
+        manager.setDnsSdResponseListeners(channel,
+            { instanceName, registrationType, srcDevice ->
+                Log.d(tag, "Service discovered: instanceName=$instanceName, type=$registrationType, device=${srcDevice.deviceName}")
+            },
+            { _, txtRecordMap, srcDevice ->
+                Log.d(tag, "TXT record received: $txtRecordMap from ${srcDevice.deviceName}")
+                val name = txtRecordMap["name"] ?: srcDevice.deviceName
+                val shakeStr = txtRecordMap["shake"]
+                val shakeTime = shakeStr?.toLongOrNull() ?: 0L
+
+                val timeDifference = Math.abs(myShakeTime - shakeTime)
+                Log.d(tag, "Discovered device shake timestamp diff: ${timeDifference / 1000} seconds")
+
+                if (timeDifference < 15_000 && shakeTime != 0L) {
+                    val peer = PeerInfo(srcDevice, name, shakeTime)
+                    discoveredServicePeers[srcDevice.deviceAddress] = peer
+                    onPeersDiscovered(discoveredServicePeers.values.toList())
+
+                    if (myShakeTime > 0 && shakeTime > 0) {
+                        onConnectionRequestReceived(peer)
+                    }
+                }
+            }
+        )
+
+        serviceRequest = WifiP2pDnsSdServiceRequest.newInstance()
+        manager.addServiceRequest(channel, serviceRequest, object : WifiP2pManager.ActionListener {
+            override fun onSuccess() {
+                manager.discoverServices(channel, object : WifiP2pManager.ActionListener {
+                    override fun onSuccess() {
+                        Log.d(tag, "Service discovery initiated successfully.")
+                    }
+                    override fun onFailure(reason: Int) {
+                        Log.e(tag, "Service discovery failed: $reason")
+                    }
+                })
+            }
+            override fun onFailure(reason: Int) {
+                Log.e(tag, "Failed to add service request: $reason")
+            }
+        })
+    }
+
+    fun stopDiscovery() {
+        if (manager == null || channel == null) return
+        if (serviceRequest != null) {
+            manager.removeServiceRequest(channel, serviceRequest, object : WifiP2pManager.ActionListener {
+                override fun onSuccess() { Log.d(tag, "Service request removed") }
+                override fun onFailure(reason: Int) {}
+            })
+        }
+        manager.clearServiceRequests(channel, object : WifiP2pManager.ActionListener {
+            override fun onSuccess() {}
+            override fun onFailure(reason: Int) {}
+        })
+        manager.clearLocalServices(channel, object : WifiP2pManager.ActionListener {
+            override fun onSuccess() {}
+            override fun onFailure(reason: Int) {}
+        })
+    }
+
+    @SuppressLint("MissingPermission")
+    fun connectToPeer(peer: PeerInfo) {
+        if (manager == null || channel == null) return
+
+        val myAddr = myDeviceAddress
+        val peerAddr = peer.device.deviceAddress
+
+        if (myAddr.isNotEmpty() && peerAddr.isNotEmpty()) {
+            if (myAddr.compareTo(peerAddr) > 0) {
+                Log.d(tag, "My address ($myAddr) > Peer address ($peerAddr). Postponing connection request so peer connects to me.")
+                return
+            }
+        }
+
+        val config = WifiP2pConfig().apply {
+            deviceAddress = peer.device.deviceAddress
+        }
+
+        manager.connect(channel, config, object : WifiP2pManager.ActionListener {
+            override fun onSuccess() {
+                Log.d(tag, "Initiated connection to ${peer.userName}")
+            }
+            override fun onFailure(reason: Int) {
+                Log.e(tag, "Connection initiation failed: $reason")
+            }
+        })
+    }
+
+    fun disconnect() {
+        if (manager == null || channel == null) return
+        manager.removeGroup(channel, object : WifiP2pManager.ActionListener {
+            override fun onSuccess() {
+                Log.d(tag, "Successfully disconnected from P2P group.")
+            }
+            override fun onFailure(reason: Int) {
+                Log.e(tag, "Failed to disconnect: $reason")
+            }
+        })
+    }
+}
