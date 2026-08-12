@@ -84,6 +84,8 @@ class AudioBeaconEmitter {
                     val freq = 17500.0 + (digit * 100.0)
                     playTone(freq, 200)
                     if (!isPlaying.get()) break
+                    playSilence(100)
+                    if (!isPlaying.get()) break
                 }
 
                 // Brief spacing silence for 100 ms
