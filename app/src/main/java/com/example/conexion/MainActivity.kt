@@ -29,6 +29,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import coil.compose.AsyncImage
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -70,8 +71,9 @@ class MainActivity : ComponentActivity() {
     // BLE background service state
     private var isBgDiscoveryEnabled = mutableStateOf(false)
 
-    // Match discovered from background BLE scan
-    private var matchedBlePeer = mutableStateOf<BackgroundDiscoveryService.BlePeer?>(null)
+    // TAREA B & E: Candidates discovered from background BLE scan
+    private val sendingCandidates = mutableStateMapOf<String, BackgroundDiscoveryService.BlePeer>()
+    private var showSingleCandidateManual = mutableStateOf<String?>(null)
 
     // Current Session Token
     private var currentSessionToken = "000000000000"
@@ -91,16 +93,22 @@ class MainActivity : ComponentActivity() {
 
     private val bgServiceReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == BackgroundDiscoveryService.ACTION_PEER_FOUND) {
-                val name = intent.getStringExtra(BackgroundDiscoveryService.EXTRA_PEER_NAME) ?: "Dispositivo Cercano"
-                val token = intent.getStringExtra(BackgroundDiscoveryService.EXTRA_PEER_TOKEN) ?: "000000000000"
-                val state = intent.getIntExtra("EXTRA_PEER_STATE", 0)
-                Log.d(tag, "Received BLE peer match from background service: $name, token=$token")
-                matchedBlePeer.value = BackgroundDiscoveryService.BlePeer(name, token, state)
-            } else if (intent?.action == BackgroundDiscoveryService.ACTION_PEER_SENDING) {
+            if (intent?.action == BackgroundDiscoveryService.ACTION_PEER_SENDING) {
                 val name = intent.getStringExtra(BackgroundDiscoveryService.EXTRA_PEER_NAME) ?: "Dispositivo Emisor"
                 val token = intent.getStringExtra(BackgroundDiscoveryService.EXTRA_PEER_TOKEN) ?: "000000000000"
-                Log.d(tag, "Received BLE peer sending from background service: $name, token=$token")
+                val isAmbiguous = intent.getBooleanExtra("EXTRA_IS_AMBIGUOUS", false)
+                Log.d(tag, "Received BLE peer sending from background service: $name, token=$token, isAmbiguous=$isAmbiguous")
+
+                val peer = BackgroundDiscoveryService.BlePeer(name, token, 1)
+                sendingCandidates[token] = peer
+
+                // Auto-expiration after 15 seconds to keep candidates list clean
+                lifecycleScope.launch {
+                    delay(15_000)
+                    if (sendingCandidates[token] == peer) {
+                        sendingCandidates.remove(token)
+                    }
+                }
             } else if (intent?.action == BackgroundDiscoveryService.ACTION_BEACON_TOKEN_DECODED) {
                 val token = intent.getStringExtra(BackgroundDiscoveryService.EXTRA_PEER_TOKEN) ?: "000000000000"
                 val name = intent.getStringExtra(BackgroundDiscoveryService.EXTRA_PEER_NAME) ?: "Dispositivo ultrasónico"
@@ -135,18 +143,23 @@ class MainActivity : ComponentActivity() {
                     }
                     val uris = pendingShareUris.value
                     if (uris.isNotEmpty()) {
-                        val hostAddress = if (info.isGroupOwner) {
-                            fileTransferManager.lastClientIpAddress ?: "192.168.49.2"
-                        } else {
-                            info.groupOwnerAddress?.hostAddress ?: "192.168.49.1"
-                        }
                         lifecycleScope.launch {
-                            delay(1000)
+                            delay(1500)
+                            val hostAddress = if (info.isGroupOwner) {
+                                fileTransferManager.lastClientIpAddress ?: "192.168.49.2"
+                            } else {
+                                info.groupOwnerAddress?.hostAddress ?: "192.168.49.1"
+                            }
                             for (uri in uris) {
-                                try {
-                                    fileTransferManager.sendFile(hostAddress, uri)
-                                } catch (e: Exception) {
-                                    Log.e(tag, "Failed to send automatic file: $uri", e)
+                                var sent = false
+                                var attempts = 0
+                                while (!sent && attempts < 5) {
+                                    attempts++
+                                    Log.d(tag, "Attempt $attempts: Sending automatic file: $uri to $hostAddress")
+                                    sent = fileTransferManager.sendFile(hostAddress, uri)
+                                    if (!sent) {
+                                        delay(1500)
+                                    }
                                 }
                             }
                             pendingShareUris.value = emptyList()
@@ -197,9 +210,8 @@ class MainActivity : ComponentActivity() {
 
         toggleWifi(true)
 
-        // Register local broadcast receiver for match, peer sending and beacon decoding events
+        // Register local broadcast receiver for peer sending and beacon decoding events
         val bgFilter = IntentFilter().apply {
-            addAction(BackgroundDiscoveryService.ACTION_PEER_FOUND)
             addAction(BackgroundDiscoveryService.ACTION_PEER_SENDING)
             addAction(BackgroundDiscoveryService.ACTION_BEACON_TOKEN_DECODED)
         }
@@ -240,7 +252,9 @@ class MainActivity : ComponentActivity() {
             val token = intent.getStringExtra(BackgroundDiscoveryService.EXTRA_PEER_TOKEN) ?: "000000000000"
             val state = intent.getIntExtra("EXTRA_PEER_STATE", 0)
             Log.d(tag, "Handled launch intent with BLE match: $name, token=$token")
-            matchedBlePeer.value = BackgroundDiscoveryService.BlePeer(name, token, state)
+            val peer = BackgroundDiscoveryService.BlePeer(name, token, state)
+            sendingCandidates[token] = peer
+            showSingleCandidateManual.value = token
         }
     }
 
@@ -373,6 +387,121 @@ class MainActivity : ComponentActivity() {
             }
         }
         requestPermissionLauncher.launch(permissions.toTypedArray())
+    }
+
+    fun getFileNameFromUri(context: Context, uri: Uri): String {
+        var name: String? = null
+        if (uri.scheme == "content") {
+            val cursor = context.contentResolver.query(uri, null, null, null, null)
+            cursor?.use {
+                if (it.moveToFirst()) {
+                    val index = it.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                    if (index != -1) {
+                        name = it.getString(index)
+                    }
+                }
+            }
+        }
+        if (name == null) {
+            val path = uri.path
+            if (path != null) {
+                val cut = path.lastIndexOf('/')
+                name = if (cut != -1) path.substring(cut + 1) else path
+            }
+        }
+        return name ?: "archivo_compartido"
+    }
+
+    fun getFileSizeFromUri(context: Context, uri: Uri): Long {
+        var size = -1L
+        if (uri.scheme == "content") {
+            val cursor = context.contentResolver.query(uri, null, null, null, null)
+            cursor?.use {
+                if (it.moveToFirst()) {
+                    val index = it.getColumnIndex(android.provider.OpenableColumns.SIZE)
+                    if (index != -1) {
+                        size = it.getLong(index)
+                    }
+                }
+            }
+        }
+        return size
+    }
+
+    @Composable
+    fun FilePreviewItem(uri: Uri) {
+        val context = LocalContext.current
+        val fileName = remember(uri) { getFileNameFromUri(context, uri) }
+        val mimeType = remember(uri) { context.contentResolver.getType(uri) }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 4.dp)
+                .background(Color.White.copy(alpha = 0.15f), RoundedCornerShape(8.dp))
+                .padding(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (mimeType?.startsWith("image/") == true) {
+                AsyncImage(
+                    model = uri,
+                    contentDescription = "Miniatura",
+                    modifier = Modifier
+                        .size(64.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .border(1.dp, Color.LightGray, RoundedCornerShape(8.dp))
+                )
+            } else if (mimeType?.startsWith("video/") == true) {
+                Box(
+                    modifier = Modifier
+                        .size(64.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color.Black.copy(alpha = 0.2f))
+                        .border(1.dp, Color.LightGray, RoundedCornerShape(8.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("▶", fontSize = 24.sp, color = Color.White)
+                }
+            } else {
+                Box(
+                    modifier = Modifier
+                        .size(64.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color.LightGray.copy(alpha = 0.5f))
+                        .border(1.dp, Color.LightGray, RoundedCornerShape(8.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    val ext = fileName.substringAfterLast('.', "").uppercase().take(4)
+                    Text(
+                        text = ext.ifEmpty { "DOC" },
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.DarkGray
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.width(12.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = fileName,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 14.sp,
+                    maxLines = 2,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+                val size = remember(uri) {
+                    val bytes = getFileSizeFromUri(context, uri)
+                    if (bytes > 0) String.format("%.2f MB", bytes.toDouble() / (1024 * 1024)) else "Tamaño desconocido"
+                }
+                Text(
+                    text = size,
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                )
+            }
+        }
     }
 
     @OptIn(ExperimentalMaterial3Api::class)
@@ -559,12 +688,14 @@ class MainActivity : ComponentActivity() {
                             style = MaterialTheme.typography.titleMedium,
                             color = MaterialTheme.colorScheme.onPrimaryContainer
                         )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = "${pendingShareUris.value.size} archivo(s) listo(s) para compartir.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer
-                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            pendingShareUris.value.forEach { uri ->
+                                FilePreviewItem(uri = uri)
+                            }
+                        }
+
                         Spacer(modifier = Modifier.height(12.dp))
                         Row(
                             horizontalArrangement = Arrangement.SpaceEvenly,
@@ -764,29 +895,30 @@ class MainActivity : ComponentActivity() {
                 )
             }
 
-            matchedBlePeer.value?.let { peer ->
+            val singleToken = showSingleCandidateManual.value
+            if (singleToken != null && sendingCandidates.containsKey(singleToken)) {
+                val peer = sendingCandidates[singleToken]!!
                 AlertDialog(
-                    onDismissRequest = { matchedBlePeer.value = null },
-                    title = { Text("Coincidencia BLE Encontrada") },
+                    onDismissRequest = { showSingleCandidateManual.value = null; sendingCandidates.remove(singleToken) },
+                    title = { Text("Dispositivo Compartiendo") },
                     text = {
                         Text(
-                            text = "Se ha detectado a ${peer.userName} en segundo plano.",
+                            text = "Se ha detectado a ${peer.userName} compartiendo un archivo.",
                             style = MaterialTheme.typography.bodyMedium
                         )
                     },
                     confirmButton = {
                         Button(
                             onClick = {
-                                // Attempt to resolve peer using local DNS-SD service table via token
                                 val p2pPeer = wifiP2pHelper.findPeerByToken(peer.sessionToken)
                                 if (p2pPeer != null) {
                                     wifiP2pHelper.connectToPeer(p2pPeer)
                                 } else {
-                                    // Peer MAC not resolved yet. Trigger WifiP2p service discovery to find and connect to peer automatically
                                     Toast.makeText(context, "Buscando dirección de red segura...", Toast.LENGTH_SHORT).show()
                                     wifiP2pHelper.startDiscoveryForToken(peer.sessionToken, peer.userName)
                                 }
-                                matchedBlePeer.value = null
+                                showSingleCandidateManual.value = null
+                                sendingCandidates.remove(singleToken)
                             }
                         ) {
                             Text("Conectar Ahora")
@@ -794,9 +926,69 @@ class MainActivity : ComponentActivity() {
                     },
                     dismissButton = {
                         TextButton(
-                            onClick = { matchedBlePeer.value = null }
+                            onClick = { showSingleCandidateManual.value = null; sendingCandidates.remove(singleToken) }
                         ) {
                             Text("Ignorar")
+                        }
+                    }
+                )
+            }
+
+            if (sendingCandidates.size >= 2) {
+                AlertDialog(
+                    onDismissRequest = { sendingCandidates.clear() },
+                    title = { Text("Múltiples Dispositivos Cerca") },
+                    text = {
+                        Column {
+                            Text(
+                                text = "Se detectaron varios dispositivos compartiendo cerca, elige con cuál conectar:",
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                            Spacer(modifier = Modifier.height(16.dp))
+                            sendingCandidates.values.forEach { peer ->
+                                Card(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 4.dp),
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(12.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(
+                                            text = peer.userName,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        Button(
+                                            onClick = {
+                                                val p2pPeer = wifiP2pHelper.findPeerByToken(peer.sessionToken)
+                                                if (p2pPeer != null) {
+                                                    wifiP2pHelper.connectToPeer(p2pPeer)
+                                                } else {
+                                                    Toast.makeText(context, "Buscando dirección de red...", Toast.LENGTH_SHORT).show()
+                                                    wifiP2pHelper.startDiscoveryForToken(peer.sessionToken, peer.userName)
+                                                }
+                                                sendingCandidates.clear()
+                                            }
+                                        ) {
+                                            Text("Conectar")
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    confirmButton = {},
+                    dismissButton = {
+                        TextButton(
+                            onClick = { sendingCandidates.clear() }
+                        ) {
+                            Text("Cancelar")
                         }
                     }
                 )

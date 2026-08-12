@@ -39,7 +39,6 @@ class BackgroundDiscoveryService : Service() {
         const val ACTION_SET_SENDING = "com.example.conexion.ACTION_SET_SENDING"
         const val ACTION_CLEAR_SENDING = "com.example.conexion.ACTION_CLEAR_SENDING"
 
-        const val ACTION_PEER_FOUND = "com.example.conexion.ACTION_PEER_FOUND"
         const val ACTION_PEER_SENDING = "com.example.conexion.ACTION_PEER_SENDING"
         const val ACTION_BEACON_TOKEN_DECODED = "com.example.conexion.ACTION_BEACON_TOKEN_DECODED"
 
@@ -75,6 +74,9 @@ class BackgroundDiscoveryService : Service() {
 
     private var audioBeaconListener: AudioBeaconListener? = null
     private val recentlyDetectedPeerNames = mutableMapOf<String, String>()
+
+    // TAREA B: Tracks active sending peers in the last 15 seconds
+    private val activeSendingPeers = mutableMapOf<String, Long>()
 
     override fun onCreate() {
         super.onCreate()
@@ -379,30 +381,63 @@ class BackgroundDiscoveryService : Service() {
         Log.d(tag, "Discovered BLE peer: name=${peer.userName}, token=${peer.sessionToken}, state=${peer.state}")
 
         if (peer.state == 1) { // Peer is SENDING
-            val lastNotified = recentlyNotifiedPeers[peer.sessionToken] ?: 0L
-            if (now - lastNotified > 10_000) { // Throttle duplicate notifications (10 seconds)
-                recentlyNotifiedPeers[peer.sessionToken] = now
-                Log.d(tag, "PEER SENDING DETECTED: ${peer.userName} (${peer.sessionToken})")
+            // Record active sending peer
+            activeSendingPeers[peer.sessionToken] = now
 
-                // Start listening to the beacon (FIX 4)
-                if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                    Log.d(tag, "RECORD_AUDIO permission granted. Starting AudioBeaconListener for token: ${peer.sessionToken}")
-                    audioBeaconListener?.start(peer.sessionToken)
-                } else {
-                    Log.e(tag, "RECORD_AUDIO permission not granted. Cannot start AudioBeaconListener.")
-                    showErrorToast("Permiso de micrófono no otorgado. No se puede escuchar la baliza.")
+            // Clean up stale sending peers (older than 15 seconds)
+            val iterator = activeSendingPeers.entries.iterator()
+            while (iterator.hasNext()) {
+                val entry = iterator.next()
+                if (now - entry.value > 15_000) {
+                    iterator.remove()
                 }
+            }
 
-                // 1. Broadcast the PEER_SENDING to MainActivity (using explicit intent)
-                val intent = Intent(ACTION_PEER_SENDING).apply {
-                    setPackage(packageName)
-                    putExtra(EXTRA_PEER_NAME, peer.userName)
-                    putExtra(EXTRA_PEER_TOKEN, peer.sessionToken)
+            if (activeSendingPeers.size >= 2) {
+                // TAREA B: Ambiguity guard. Stop any active audio beacon listener and don't start new ones.
+                Log.d(tag, "AMBIGUITY GUARD: Multiple active sending peers detected (${activeSendingPeers.keys}). Stopping AudioBeaconListener.")
+                audioBeaconListener?.stop()
+
+                val lastNotified = recentlyNotifiedPeers[peer.sessionToken] ?: 0L
+                if (now - lastNotified > 10_000) {
+                    recentlyNotifiedPeers[peer.sessionToken] = now
+                    // Broadcast ACTION_PEER_SENDING with ambiguity flag to show the choice list in MainActivity
+                    val intent = Intent(ACTION_PEER_SENDING).apply {
+                        setPackage(packageName)
+                        putExtra(EXTRA_PEER_NAME, peer.userName)
+                        putExtra(EXTRA_PEER_TOKEN, peer.sessionToken)
+                        putExtra("EXTRA_IS_AMBIGUOUS", true)
+                    }
+                    sendBroadcast(intent)
                 }
-                sendBroadcast(intent)
+            } else {
+                // Exactly one active sending peer. Normal flow.
+                val lastNotified = recentlyNotifiedPeers[peer.sessionToken] ?: 0L
+                if (now - lastNotified > 10_000) { // Throttle duplicate notifications (10 seconds)
+                    recentlyNotifiedPeers[peer.sessionToken] = now
+                    Log.d(tag, "PEER SENDING DETECTED: ${peer.userName} (${peer.sessionToken})")
 
-                // 2. Show a notification
-                showMatchNotification(peer)
+                    // Start listening to the beacon (FIX 4)
+                    if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                        Log.d(tag, "RECORD_AUDIO permission granted. Starting AudioBeaconListener for token: ${peer.sessionToken}")
+                        audioBeaconListener?.start(peer.sessionToken)
+                    } else {
+                        Log.e(tag, "RECORD_AUDIO permission not granted. Cannot start AudioBeaconListener.")
+                        showErrorToast("Permiso de micrófono no otorgado. No se puede escuchar la baliza.")
+                    }
+
+                    // Broadcast the PEER_SENDING to MainActivity (using explicit intent)
+                    val intent = Intent(ACTION_PEER_SENDING).apply {
+                        setPackage(packageName)
+                        putExtra(EXTRA_PEER_NAME, peer.userName)
+                        putExtra(EXTRA_PEER_TOKEN, peer.sessionToken)
+                        putExtra("EXTRA_IS_AMBIGUOUS", false)
+                    }
+                    sendBroadcast(intent)
+
+                    // Show a notification
+                    showMatchNotification(peer)
+                }
             }
         }
     }

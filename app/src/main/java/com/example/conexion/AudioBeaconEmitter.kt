@@ -24,9 +24,7 @@ class AudioBeaconEmitter {
             return
         }
 
-        val hash = (sessionToken.hashCode() % 10000).let { if (it < 0) it + 10000 else it }
-        val digits = hash.toString().padStart(4, '0').map { it.toString().toInt() }
-        Log.d(tag, "Starting Audio Beacon Emitter for token: $sessionToken, hash digits: $digits")
+        Log.d(tag, "Starting Audio Beacon Emitter playing 18000 Hz pulses")
 
         playThread = Thread {
             val minBufferSize = AudioTrack.getMinBufferSize(
@@ -75,21 +73,12 @@ class AudioBeaconEmitter {
 
             val startTime = System.currentTimeMillis()
             while (isPlaying.get() && (System.currentTimeMillis() - startTime) < 15_000) {
-                // Play sync tone (18500 Hz) for 300 ms
-                playTone(18500.0, 300)
+                // Play 18000 Hz for 300 ms
+                playTone(18000.0, 300)
                 if (!isPlaying.get()) break
 
-                // Play digits (17500 + digit * 100 Hz) for 200 ms each
-                for (digit in digits) {
-                    val freq = 17500.0 + (digit * 100.0)
-                    playTone(freq, 200)
-                    if (!isPlaying.get()) break
-                    playSilence(100)
-                    if (!isPlaying.get()) break
-                }
-
-                // Brief spacing silence for 100 ms
-                playSilence(100)
+                // Play silence for 200 ms
+                playSilence(200)
             }
 
             stopInternal()
