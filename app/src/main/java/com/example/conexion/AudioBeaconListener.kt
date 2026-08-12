@@ -80,6 +80,8 @@ class AudioBeaconListener(
             val detectedDigits = mutableListOf<Int>()
             var decodedSuccessfully = false
 
+            var lastSeenTime = 0L
+
             while (isListening.get() && (System.currentTimeMillis() - startTime) < 15_000) {
                 val readShorts = audioRecord.read(shortBuffer, 0, shortBuffer.size)
                 if (readShorts <= 0) continue
@@ -109,11 +111,12 @@ class AudioBeaconListener(
                             Log.d(tag, "SYNC TONE detected! Resetting sequence.")
                             lastSyncDetectedTime = now
                             detectedDigits.clear()
+                            lastSeenTime = 0L
                         }
                     } else if (lastSyncDetectedTime > 0 && now - lastSyncDetectedTime < 4000) {
                         // Digit tone detected
                         val digit = maxEnergyIndex
-                        if (detectedDigits.isEmpty() || detectedDigits.last() != digit) {
+                        if (detectedDigits.isEmpty() || detectedDigits.last() != digit || now - lastSeenTime > 80) {
                             Log.d(tag, "Digit tone detected: $digit")
                             detectedDigits.add(digit)
 
@@ -131,6 +134,7 @@ class AudioBeaconListener(
                                 }
                             }
                         }
+                        lastSeenTime = now
                     }
                 }
             }

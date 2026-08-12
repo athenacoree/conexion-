@@ -133,6 +133,25 @@ class MainActivity : ComponentActivity() {
                     lifecycleScope.launch {
                         fileTransferManager.startServer()
                     }
+                    val uris = pendingShareUris.value
+                    if (uris.isNotEmpty()) {
+                        val hostAddress = if (info.isGroupOwner) {
+                            fileTransferManager.lastClientIpAddress ?: "192.168.49.2"
+                        } else {
+                            info.groupOwnerAddress?.hostAddress ?: "192.168.49.1"
+                        }
+                        lifecycleScope.launch {
+                            delay(1000)
+                            for (uri in uris) {
+                                try {
+                                    fileTransferManager.sendFile(hostAddress, uri)
+                                } catch (e: Exception) {
+                                    Log.e(tag, "Failed to send automatic file: $uri", e)
+                                }
+                            }
+                            pendingShareUris.value = emptyList()
+                        }
+                    }
                     Toast.makeText(this, "¡Conectado exitosamente!", Toast.LENGTH_SHORT).show()
                 } else {
                     fileTransferManager.stopServer()
