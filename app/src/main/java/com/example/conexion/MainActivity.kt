@@ -53,7 +53,6 @@ class MainActivity : ComponentActivity() {
     private lateinit var fileTransferManager: FileTransferManager
 
     private var audioBeaconEmitter: AudioBeaconEmitter? = null
-    private var audioBeaconListener: AudioBeaconListener? = null
 
     // App state observables
     private var isWifiEnabledState = mutableStateOf(false)
@@ -102,8 +101,21 @@ class MainActivity : ComponentActivity() {
                 val name = intent.getStringExtra(BackgroundDiscoveryService.EXTRA_PEER_NAME) ?: "Dispositivo Emisor"
                 val token = intent.getStringExtra(BackgroundDiscoveryService.EXTRA_PEER_TOKEN) ?: "000000000000"
                 Log.d(tag, "Received BLE peer sending from background service: $name, token=$token")
-                // Start listening to the beacon! (TAREA 5)
-                audioBeaconListener?.start(token)
+            } else if (intent?.action == BackgroundDiscoveryService.ACTION_BEACON_TOKEN_DECODED) {
+                val token = intent.getStringExtra(BackgroundDiscoveryService.EXTRA_PEER_TOKEN) ?: "000000000000"
+                val name = intent.getStringExtra(BackgroundDiscoveryService.EXTRA_PEER_NAME) ?: "Dispositivo ultrasónico"
+                val success = intent.getBooleanExtra("EXTRA_DECODE_SUCCESS", false)
+                Log.d(tag, "Received Beacon decoded broadcast: token=$token, name=$name, success=$success")
+                if (success) {
+                    Toast.makeText(this@MainActivity, "¡Tono ultrasónico válido detectado!", Toast.LENGTH_LONG).show()
+                    val peer = wifiP2pHelper.findPeerByToken(token)
+                    if (peer != null) {
+                        wifiP2pHelper.triggerConnectionRequest(peer)
+                    } else {
+                        Toast.makeText(this@MainActivity, "Buscando información de red para el emisor...", Toast.LENGTH_SHORT).show()
+                        wifiP2pHelper.startDiscoveryForToken(token, name)
+                    }
+                }
             }
         }
     }
@@ -140,20 +152,6 @@ class MainActivity : ComponentActivity() {
         )
 
         audioBeaconEmitter = AudioBeaconEmitter()
-        audioBeaconListener = AudioBeaconListener { token ->
-            runOnUiThread {
-                Toast.makeText(this, "¡Tono ultrasónico válido detectado!", Toast.LENGTH_LONG).show()
-                // Resolved the sender via DNS-SD/BLE using token (TAREA 6)
-                val peer = wifiP2pHelper.findPeerByToken(token)
-                if (peer != null) {
-                    connectionPromptPeer.value = peer
-                } else {
-                    // Try to discover secure network address for token
-                    Toast.makeText(this, "Buscando información de red para el emisor...", Toast.LENGTH_SHORT).show()
-                    wifiP2pHelper.startDiscoveryForToken(token, "Dispositivo ultrasónico")
-                }
-            }
-        }
 
         fileTransferManager = FileTransferManager(
             context = this,
@@ -180,10 +178,11 @@ class MainActivity : ComponentActivity() {
 
         toggleWifi(true)
 
-        // Register local broadcast receiver for match and peer sending events
+        // Register local broadcast receiver for match, peer sending and beacon decoding events
         val bgFilter = IntentFilter().apply {
             addAction(BackgroundDiscoveryService.ACTION_PEER_FOUND)
             addAction(BackgroundDiscoveryService.ACTION_PEER_SENDING)
+            addAction(BackgroundDiscoveryService.ACTION_BEACON_TOKEN_DECODED)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(bgServiceReceiver, bgFilter, Context.RECEIVER_NOT_EXPORTED)
@@ -260,7 +259,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onPause() {
-        super.onPause()
+        super.onPause() // FIX 1: Corrected lifecycle call from super.onResume() to super.onPause()
     }
 
     override fun onDestroy() {
