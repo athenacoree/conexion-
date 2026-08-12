@@ -22,10 +22,10 @@ android {
 
     signingConfigs {
         create("release") {
-            val envKeystoreFilePath = System.getenv("KEYSTORE_FILE_PATH")?.trim()
-            val envKeystorePassword = System.getenv("KEYSTORE_PASSWORD")?.trim()
-            val envKeyAlias = System.getenv("KEY_ALIAS")?.trim()
-            val envKeyPasswordRaw = System.getenv("KEY_PASSWORD")?.trim()
+            val envKeystoreFilePath = System.getenv("KEYSTORE_FILE_PATH")
+            val envKeystorePassword = System.getenv("KEYSTORE_PASSWORD")
+            val envKeyAlias = System.getenv("KEY_ALIAS")
+            val envKeyPasswordRaw = System.getenv("KEY_PASSWORD")
             val envKeyPassword = if (envKeyPasswordRaw.isNullOrEmpty()) envKeystorePassword else envKeyPasswordRaw
 
             if (!envKeystoreFilePath.isNullOrEmpty() && !envKeystorePassword.isNullOrEmpty() && !envKeyAlias.isNullOrEmpty()) {
