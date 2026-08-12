@@ -25,10 +25,16 @@ android {
             val envKeystoreFilePath = System.getenv("KEYSTORE_FILE_PATH")
             val envKeystorePassword = System.getenv("KEYSTORE_PASSWORD")
             val envKeyAlias = System.getenv("KEY_ALIAS")
-            val envKeyPassword = System.getenv("KEY_PASSWORD") ?: envKeystorePassword
+            val envKeyPasswordRaw = System.getenv("KEY_PASSWORD")
+            val envKeyPassword = if (envKeyPasswordRaw.isNullOrEmpty()) envKeystorePassword else envKeyPasswordRaw
 
             if (!envKeystoreFilePath.isNullOrEmpty() && !envKeystorePassword.isNullOrEmpty() && !envKeyAlias.isNullOrEmpty()) {
-                storeFile = file(envKeystoreFilePath)
+                val keystoreFile = file(envKeystoreFilePath)
+                storeFile = if (keystoreFile.exists()) {
+                    keystoreFile
+                } else {
+                    rootProject.file(envKeystoreFilePath)
+                }
                 storePassword = envKeystorePassword
                 keyAlias = envKeyAlias
                 keyPassword = envKeyPassword
