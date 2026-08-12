@@ -10,7 +10,8 @@ import kotlin.math.cos
 import kotlin.math.sin
 
 class AudioBeaconListener(
-    private val onTokenDecoded: (String) -> Unit
+    private val onTokenDecoded: (String) -> Unit,
+    private val onFinished: ((Boolean) -> Unit)? = null
 ) {
     private val tag = "AudioBeaconListener"
     private val isListening = AtomicBoolean(false)
@@ -77,6 +78,7 @@ class AudioBeaconListener(
 
             var lastSyncDetectedTime = 0L
             val detectedDigits = mutableListOf<Int>()
+            var decodedSuccessfully = false
 
             while (isListening.get() && (System.currentTimeMillis() - startTime) < 15_000) {
                 val readShorts = audioRecord.read(shortBuffer, 0, shortBuffer.size)
@@ -122,6 +124,7 @@ class AudioBeaconListener(
                                 Log.d(tag, "Decoded sequence: $sequenceStr, target is: $targetStr")
                                 if (sequenceStr == targetStr) {
                                     Log.d(tag, "SUCCESS! Target token matched.")
+                                    decodedSuccessfully = true
                                     onTokenDecoded(targetToken)
                                     isListening.set(false)
                                     break
@@ -139,6 +142,7 @@ class AudioBeaconListener(
                 // ignore
             }
             isListening.set(false)
+            onFinished?.invoke(decodedSuccessfully)
             Log.d(tag, "Audio Beacon Listener stopped")
         }.apply {
             priority = Thread.MAX_PRIORITY

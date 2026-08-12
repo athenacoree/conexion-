@@ -7,12 +7,14 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.le.*
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.os.ParcelUuid
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
 import java.nio.ByteBuffer
@@ -37,12 +39,12 @@ class BackgroundDiscoveryService : Service() {
         const val ACTION_SET_SENDING = "com.example.conexion.ACTION_SET_SENDING"
         const val ACTION_CLEAR_SENDING = "com.example.conexion.ACTION_CLEAR_SENDING"
 
-        const val EXTRA_USER_NAME = "EXTRA_USER_NAME"
-        const val EXTRA_WIFI_MAC = "EXTRA_WIFI_MAC"
-
         const val ACTION_PEER_FOUND = "com.example.conexion.ACTION_PEER_FOUND"
         const val ACTION_PEER_SENDING = "com.example.conexion.ACTION_PEER_SENDING"
+        const val ACTION_BEACON_TOKEN_DECODED = "com.example.conexion.ACTION_BEACON_TOKEN_DECODED"
 
+        const val EXTRA_USER_NAME = "EXTRA_USER_NAME"
+        const val EXTRA_WIFI_MAC = "EXTRA_WIFI_MAC"
         const val EXTRA_PEER_NAME = "EXTRA_PEER_NAME"
         const val EXTRA_PEER_MAC = "EXTRA_PEER_MAC"
         const val EXTRA_PEER_TOKEN = "EXTRA_PEER_TOKEN"
@@ -71,6 +73,9 @@ class BackgroundDiscoveryService : Service() {
     // Tracks peers to avoid showing duplicate notifications in a short window
     private val recentlyNotifiedPeers = mutableMapOf<String, Long>()
 
+    private var audioBeaconListener: AudioBeaconListener? = null
+    private val recentlyDetectedPeerNames = mutableMapOf<String, String>()
+
     override fun onCreate() {
         super.onCreate()
         Log.d(tag, "Service onCreate")
@@ -78,6 +83,29 @@ class BackgroundDiscoveryService : Service() {
         bluetoothAdapter = bluetoothManager?.adapter
         advertiser = bluetoothAdapter?.bluetoothLeAdvertiser
         scanner = bluetoothAdapter?.bluetoothLeScanner
+
+        audioBeaconListener = AudioBeaconListener(
+            onTokenDecoded = { token ->
+                Log.d(tag, "Beacon decoded token: $token")
+                val intent = Intent(ACTION_BEACON_TOKEN_DECODED).apply {
+                    setPackage(packageName)
+                    putExtra(EXTRA_PEER_TOKEN, token)
+                    putExtra(EXTRA_PEER_NAME, recentlyDetectedPeerNames[token] ?: "Dispositivo ultrasónico")
+                    putExtra("EXTRA_DECODE_SUCCESS", true)
+                }
+                sendBroadcast(intent)
+            },
+            onFinished = { success ->
+                Log.d(tag, "Beacon listener finished. Success: $success")
+                if (!success) {
+                    val intent = Intent(ACTION_BEACON_TOKEN_DECODED).apply {
+                        setPackage(packageName)
+                        putExtra("EXTRA_DECODE_SUCCESS", false)
+                    }
+                    sendBroadcast(intent)
+                }
+            }
+        )
 
         createNotificationChannel()
     }
@@ -179,6 +207,7 @@ class BackgroundDiscoveryService : Service() {
             .build()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // FIX 3: Combine both foreground service types with bitwise OR (connectedDevice | microphone)
             val serviceTypes = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
             } else {
@@ -292,6 +321,7 @@ class BackgroundDiscoveryService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        audioBeaconListener?.stop()
         stopAdvertisingAndScanning()
         Log.d(tag, "Service onDestroy")
     }
@@ -345,6 +375,7 @@ class BackgroundDiscoveryService : Service() {
             return
         }
 
+        recentlyDetectedPeerNames[peer.sessionToken] = peer.userName
         Log.d(tag, "Discovered BLE peer: name=${peer.userName}, token=${peer.sessionToken}, state=${peer.state}")
 
         if (peer.state == 1) { // Peer is SENDING
@@ -353,8 +384,18 @@ class BackgroundDiscoveryService : Service() {
                 recentlyNotifiedPeers[peer.sessionToken] = now
                 Log.d(tag, "PEER SENDING DETECTED: ${peer.userName} (${peer.sessionToken})")
 
-                // 1. Broadcast the PEER_SENDING to MainActivity to trigger the microphone
+                // Start listening to the beacon (FIX 4)
+                if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                    Log.d(tag, "RECORD_AUDIO permission granted. Starting AudioBeaconListener for token: ${peer.sessionToken}")
+                    audioBeaconListener?.start(peer.sessionToken)
+                } else {
+                    Log.e(tag, "RECORD_AUDIO permission not granted. Cannot start AudioBeaconListener.")
+                    showErrorToast("Permiso de micrófono no otorgado. No se puede escuchar la baliza.")
+                }
+
+                // 1. Broadcast the PEER_SENDING to MainActivity (using explicit intent)
                 val intent = Intent(ACTION_PEER_SENDING).apply {
+                    setPackage(packageName)
                     putExtra(EXTRA_PEER_NAME, peer.userName)
                     putExtra(EXTRA_PEER_TOKEN, peer.sessionToken)
                 }

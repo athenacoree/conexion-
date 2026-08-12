@@ -61,6 +61,10 @@ class WifiP2pHelper(
         return tokenToPeerMap[token]
     }
 
+    fun triggerConnectionRequest(peer: PeerInfo) {
+        onConnectionRequestReceived(peer)
+    }
+
     fun startDiscoveryForToken(token: String, userName: String) {
         pendingTargetToken = token
         pendingTargetName = userName
@@ -210,6 +214,13 @@ class WifiP2pHelper(
                     // Instead of connecting or prompt immediately, we let the ultrasonic decode match trigger connection prompt.
                     if (pendingTargetToken != null && pendingTargetToken == token) {
                         Log.d(tag, "Discovered service record matching target token: $token")
+                        pendingTargetToken = null
+                        pendingTargetName = null
+                        onConnectionRequestReceived(peer)
+                    } else {
+                        // FIX 2b: TXT record discovery alone MUST NEVER trigger the confirmation dialog automatically.
+                        // It must only be registered in discoveredServicePeers/tokenToPeerMap as an available candidate.
+                        Log.d(tag, "Discovered service peer (no matching pending target token): name=${peer.userName}, token=${peer.sessionToken}")
                     }
                 }
             }
