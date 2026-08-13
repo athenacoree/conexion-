@@ -35,6 +35,7 @@ android {
                     var correctStorePassword = envKeystorePassword
                     var correctKeyPassword = if (envKeyPasswordRaw.isNullOrEmpty()) envKeystorePassword else envKeyPasswordRaw
                     var correctKeyAlias = envKeyAlias
+                    var correctStoreType = "jks"
 
                     // Test combinations of trimmed and untrimmed passwords/aliases to self-heal credentials
                     val storePassCandidates = listOf(envKeystorePassword, envKeystorePassword.trim())
@@ -44,27 +45,32 @@ android {
                         listOf(envKeystorePassword, envKeystorePassword.trim())
                     }
                     val aliasCandidates = listOf(envKeyAlias, envKeyAlias.trim())
+                    val typeCandidates = listOf("PKCS12", "JKS", KeyStore.getDefaultType()).distinct()
 
                     var found = false
-                    for (sp in storePassCandidates) {
-                        for (kp in keyPassCandidates) {
-                            for (alias in aliasCandidates) {
-                                try {
-                                    val keystore = KeyStore.getInstance(KeyStore.getDefaultType())
-                                    keystoreFile.inputStream().use { stream ->
-                                        keystore.load(stream, sp.toCharArray())
+                    for (type in typeCandidates) {
+                        for (sp in storePassCandidates) {
+                            for (kp in keyPassCandidates) {
+                                for (alias in aliasCandidates) {
+                                    try {
+                                        val keystore = KeyStore.getInstance(type)
+                                        keystoreFile.inputStream().use { stream ->
+                                            keystore.load(stream, sp.toCharArray())
+                                        }
+                                        if (keystore.containsAlias(alias)) {
+                                            keystore.getKey(alias, kp.toCharArray())
+                                            correctStorePassword = sp
+                                            correctKeyPassword = kp
+                                            correctKeyAlias = alias
+                                            correctStoreType = type
+                                            found = true
+                                            break
+                                        }
+                                    } catch (e: Exception) {
+                                        // ignore and try next combination
                                     }
-                                    if (keystore.containsAlias(alias)) {
-                                        keystore.getKey(alias, kp.toCharArray())
-                                        correctStorePassword = sp
-                                        correctKeyPassword = kp
-                                        correctKeyAlias = alias
-                                        found = true
-                                        break
-                                    }
-                                } catch (e: Exception) {
-                                    // ignore and try next combination
                                 }
+                                if (found) break
                             }
                             if (found) break
                         }
@@ -75,6 +81,7 @@ android {
                     storePassword = correctStorePassword
                     keyAlias = correctKeyAlias
                     keyPassword = correctKeyPassword
+                    storeType = correctStoreType
                 }
             }
         }
