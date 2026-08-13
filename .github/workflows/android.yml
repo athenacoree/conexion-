@@ -33,7 +33,8 @@ jobs:
             echo "Error: KEYSTORE_BASE64 secret is empty. Please set it in GitHub Secrets."
             exit 1
           fi
-          echo "$KEYSTORE_BASE64" | base64 --decode > app/release.keystore
+          # Clean whitespaces, newlines, and carriage returns to avoid decoding corruption
+          printf "%s" "$KEYSTORE_BASE64" | tr -d '\r' | tr -d '\n' | tr -d ' ' | base64 --decode > app/release.keystore
 
       - name: Build and Sign APK
         env:
