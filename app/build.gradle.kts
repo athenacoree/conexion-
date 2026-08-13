@@ -48,34 +48,71 @@ android {
                     val typeCandidates = listOf("PKCS12", "JKS", KeyStore.getDefaultType()).distinct()
 
                     var found = false
+                    logger.lifecycle("--- Keystore Diagnosis Start ---")
+                    logger.lifecycle("Keystore File: ${keystoreFile.absolutePath} (size: ${keystoreFile.length()})")
+                    logger.lifecycle("Type candidates: $typeCandidates")
+
+                    var detectedType: String? = null
                     for (type in typeCandidates) {
                         for (sp in storePassCandidates) {
-                            for (kp in keyPassCandidates) {
-                                for (alias in aliasCandidates) {
-                                    try {
-                                        val keystore = KeyStore.getInstance(type)
-                                        keystoreFile.inputStream().use { stream ->
-                                            keystore.load(stream, sp.toCharArray())
-                                        }
-                                        if (keystore.containsAlias(alias)) {
-                                            keystore.getKey(alias, kp.toCharArray())
-                                            correctStorePassword = sp
-                                            correctKeyPassword = kp
-                                            correctKeyAlias = alias
-                                            correctStoreType = type
-                                            found = true
-                                            break
-                                        }
-                                    } catch (e: Exception) {
-                                        // ignore and try next combination
-                                    }
+                            try {
+                                val keystore = KeyStore.getInstance(type)
+                                keystoreFile.inputStream().use { stream ->
+                                    keystore.load(stream, sp.toCharArray())
                                 }
-                                if (found) break
+                                detectedType = type
+                                correctStorePassword = sp
+                                found = true
+                                break
+                            } catch (e: Exception) {
+                                // ignore and try next combination
                             }
-                            if (found) break
                         }
                         if (found) break
                     }
+
+                    if (found && detectedType != null) {
+                        correctStoreType = detectedType
+                        var aliasFound = false
+                        val keystore = KeyStore.getInstance(correctStoreType)
+                        keystoreFile.inputStream().use { stream ->
+                            keystore.load(stream, correctStorePassword.toCharArray())
+                        }
+                        for (alias in aliasCandidates) {
+                            if (keystore.containsAlias(alias)) {
+                                for (kp in keyPassCandidates) {
+                                    try {
+                                        keystore.getKey(alias, kp.toCharArray())
+                                        correctKeyPassword = kp
+                                        correctKeyAlias = alias
+                                        aliasFound = true
+                                        break
+                                    } catch (e: Exception) {
+                                        // ignore
+                                    }
+                                }
+                            }
+                            if (aliasFound) break
+                        }
+                    } else {
+                        // Guess by file contents if credentials didn't load it
+                        try {
+                            keystoreFile.inputStream().use { stream ->
+                                val header = ByteArray(4)
+                                val read = stream.read(header)
+                                if (read == 4) {
+                                    val isJks = (header[0] == 0xFE.toByte() && header[1] == 0xED.toByte() &&
+                                                 header[2] == 0xFE.toByte() && header[3] == 0xED.toByte())
+                                    correctStoreType = if (isJks) "JKS" else "PKCS12"
+                                }
+                            }
+                        } catch (e: Exception) {
+                            // fallback to jks
+                        }
+                    }
+
+                    logger.lifecycle("Keystore load success: $found. Chosen type: $correctStoreType, Chosen alias: '$correctKeyAlias'")
+                    logger.lifecycle("--- Keystore Diagnosis End ---")
 
                     storeFile = keystoreFile
                     storePassword = correctStorePassword
