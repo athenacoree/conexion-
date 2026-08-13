@@ -44,27 +44,31 @@ android {
                         listOf(envKeystorePassword, envKeystorePassword.trim())
                     }
                     val aliasCandidates = listOf(envKeyAlias, envKeyAlias.trim())
+                    val keystoreTypes = listOf("PKCS12", "JKS")
 
                     var found = false
-                    for (sp in storePassCandidates) {
-                        for (kp in keyPassCandidates) {
-                            for (alias in aliasCandidates) {
-                                try {
-                                    val keystore = KeyStore.getInstance(KeyStore.getDefaultType())
-                                    keystoreFile.inputStream().use { stream ->
-                                        keystore.load(stream, sp.toCharArray())
+                    for (type in keystoreTypes) {
+                        for (sp in storePassCandidates) {
+                            for (kp in keyPassCandidates) {
+                                for (alias in aliasCandidates) {
+                                    try {
+                                        val keystore = KeyStore.getInstance(type)
+                                        keystoreFile.inputStream().use { stream ->
+                                            keystore.load(stream, sp.toCharArray())
+                                        }
+                                        if (keystore.containsAlias(alias)) {
+                                            keystore.getKey(alias, kp.toCharArray())
+                                            correctStorePassword = sp
+                                            correctKeyPassword = kp
+                                            correctKeyAlias = alias
+                                            found = true
+                                            break
+                                        }
+                                    } catch (e: Exception) {
+                                        // ignore and try next combination
                                     }
-                                    if (keystore.containsAlias(alias)) {
-                                        keystore.getKey(alias, kp.toCharArray())
-                                        correctStorePassword = sp
-                                        correctKeyPassword = kp
-                                        correctKeyAlias = alias
-                                        found = true
-                                        break
-                                    }
-                                } catch (e: Exception) {
-                                    // ignore and try next combination
                                 }
+                                if (found) break
                             }
                             if (found) break
                         }
