@@ -35,6 +35,7 @@ android {
                     var correctStorePassword = envKeystorePassword
                     var correctKeyPassword = if (envKeyPasswordRaw.isNullOrEmpty()) envKeystorePassword else envKeyPasswordRaw
                     var correctKeyAlias = envKeyAlias
+                    var correctStoreType = "jks"
 
                     // Test combinations of trimmed and untrimmed passwords/aliases to self-heal credentials
                     val storePassCandidates = listOf(envKeystorePassword, envKeystorePassword.trim())
@@ -44,37 +45,84 @@ android {
                         listOf(envKeystorePassword, envKeystorePassword.trim())
                     }
                     val aliasCandidates = listOf(envKeyAlias, envKeyAlias.trim())
+                    val typeCandidates = listOf("PKCS12", "JKS", KeyStore.getDefaultType()).distinct()
 
                     var found = false
-                    for (sp in storePassCandidates) {
-                        for (kp in keyPassCandidates) {
-                            for (alias in aliasCandidates) {
-                                try {
-                                    val keystore = KeyStore.getInstance(KeyStore.getDefaultType())
-                                    keystoreFile.inputStream().use { stream ->
-                                        keystore.load(stream, sp.toCharArray())
-                                    }
-                                    if (keystore.containsAlias(alias)) {
-                                        keystore.getKey(alias, kp.toCharArray())
-                                        correctStorePassword = sp
-                                        correctKeyPassword = kp
-                                        correctKeyAlias = alias
-                                        found = true
-                                        break
-                                    }
-                                } catch (e: Exception) {
-                                    // ignore and try next combination
+                    logger.lifecycle("--- Keystore Diagnosis Start ---")
+                    logger.lifecycle("Keystore File: ${keystoreFile.absolutePath} (size: ${keystoreFile.length()})")
+                    logger.lifecycle("Type candidates: $typeCandidates")
+                    logger.lifecycle("envKeystorePassword chars: ${envKeystorePassword.map { it.code }}")
+                    logger.lifecycle("envKeyPasswordRaw chars: ${envKeyPasswordRaw?.map { it.code }}")
+                    logger.lifecycle("envKeyAlias chars: ${envKeyAlias.map { it.code }}")
+
+                    var detectedType: String? = null
+                    for (type in typeCandidates) {
+                        for (sp in storePassCandidates) {
+                            try {
+                                val keystore = KeyStore.getInstance(type)
+                                keystoreFile.inputStream().use { stream ->
+                                    keystore.load(stream, sp.toCharArray())
                                 }
+                                detectedType = type
+                                correctStorePassword = sp
+                                found = true
+                                logger.lifecycle("Successfully loaded keystore with Type: $type, Password length: ${sp.length}")
+                                break
+                            } catch (e: Exception) {
+                                logger.lifecycle("Failed to load keystore [Type: $type, Password length: ${sp.length}] - Exception: ${e.javaClass.name}: ${e.message}")
                             }
-                            if (found) break
                         }
                         if (found) break
                     }
+
+                    if (found && detectedType != null) {
+                        correctStoreType = detectedType
+                        var aliasFound = false
+                        val keystore = KeyStore.getInstance(correctStoreType)
+                        keystoreFile.inputStream().use { stream ->
+                            keystore.load(stream, correctStorePassword.toCharArray())
+                        }
+                        for (alias in aliasCandidates) {
+                            if (keystore.containsAlias(alias)) {
+                                for (kp in keyPassCandidates) {
+                                    try {
+                                        keystore.getKey(alias, kp.toCharArray())
+                                        correctKeyPassword = kp
+                                        correctKeyAlias = alias
+                                        aliasFound = true
+                                        break
+                                    } catch (e: Exception) {
+                                        // ignore
+                                    }
+                                }
+                            }
+                            if (aliasFound) break
+                        }
+                    } else {
+                        // Guess by file contents if credentials didn't load it
+                        try {
+                            keystoreFile.inputStream().use { stream ->
+                                val header = ByteArray(4)
+                                val read = stream.read(header)
+                                if (read == 4) {
+                                    val isJks = (header[0] == 0xFE.toByte() && header[1] == 0xED.toByte() &&
+                                                 header[2] == 0xFE.toByte() && header[3] == 0xED.toByte())
+                                    correctStoreType = if (isJks) "JKS" else "PKCS12"
+                                }
+                            }
+                        } catch (e: Exception) {
+                            // fallback to jks
+                        }
+                    }
+
+                    logger.lifecycle("Keystore load success: $found. Chosen type: $correctStoreType, Chosen alias: '$correctKeyAlias'")
+                    logger.lifecycle("--- Keystore Diagnosis End ---")
 
                     storeFile = keystoreFile
                     storePassword = correctStorePassword
                     keyAlias = correctKeyAlias
                     keyPassword = correctKeyPassword
+                    storeType = correctStoreType
                 }
             }
         }
