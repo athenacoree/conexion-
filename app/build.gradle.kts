@@ -1,3 +1,5 @@
+import java.security.KeyStore
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -25,13 +27,55 @@ android {
             val envKeystoreFilePath = System.getenv("KEYSTORE_FILE_PATH")
             val envKeystorePassword = System.getenv("KEYSTORE_PASSWORD")
             val envKeyAlias = System.getenv("KEY_ALIAS")
-            val envKeyPassword = System.getenv("KEY_PASSWORD") ?: envKeystorePassword
+            val envKeyPasswordRaw = System.getenv("KEY_PASSWORD")
 
             if (!envKeystoreFilePath.isNullOrEmpty() && !envKeystorePassword.isNullOrEmpty() && !envKeyAlias.isNullOrEmpty()) {
-                storeFile = file(envKeystoreFilePath)
-                storePassword = envKeystorePassword
-                keyAlias = envKeyAlias
-                keyPassword = envKeyPassword
+                val keystoreFile = file(envKeystoreFilePath)
+                if (keystoreFile.exists()) {
+                    var correctStorePassword = envKeystorePassword
+                    var correctKeyPassword = if (envKeyPasswordRaw.isNullOrEmpty()) envKeystorePassword else envKeyPasswordRaw
+                    var correctKeyAlias = envKeyAlias
+
+                    // Test combinations of trimmed and untrimmed passwords/aliases to self-heal credentials
+                    val storePassCandidates = listOf(envKeystorePassword, envKeystorePassword.trim())
+                    val keyPassCandidates = if (!envKeyPasswordRaw.isNullOrEmpty()) {
+                        listOf(envKeyPasswordRaw, envKeyPasswordRaw.trim(), envKeystorePassword, envKeystorePassword.trim())
+                    } else {
+                        listOf(envKeystorePassword, envKeystorePassword.trim())
+                    }
+                    val aliasCandidates = listOf(envKeyAlias, envKeyAlias.trim())
+
+                    var found = false
+                    for (sp in storePassCandidates) {
+                        for (kp in keyPassCandidates) {
+                            for (alias in aliasCandidates) {
+                                try {
+                                    val keystore = KeyStore.getInstance(KeyStore.getDefaultType())
+                                    keystoreFile.inputStream().use { stream ->
+                                        keystore.load(stream, sp.toCharArray())
+                                    }
+                                    if (keystore.containsAlias(alias)) {
+                                        keystore.getKey(alias, kp.toCharArray())
+                                        correctStorePassword = sp
+                                        correctKeyPassword = kp
+                                        correctKeyAlias = alias
+                                        found = true
+                                        break
+                                    }
+                                } catch (e: Exception) {
+                                    // ignore and try next combination
+                                }
+                            }
+                            if (found) break
+                        }
+                        if (found) break
+                    }
+
+                    storeFile = keystoreFile
+                    storePassword = correctStorePassword
+                    keyAlias = correctKeyAlias
+                    keyPassword = correctKeyPassword
+                }
             }
         }
     }
@@ -80,6 +124,7 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.android)
+    implementation("io.coil-kt:coil-compose:2.6.0")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")

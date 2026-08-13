@@ -145,7 +145,7 @@ class FileTransferManager(
     /**
      * Sends a file to the host specified by hostAddress.
      */
-    suspend fun sendFile(hostAddress: String, fileUri: Uri) = withContext(Dispatchers.IO) {
+    suspend fun sendFile(hostAddress: String, fileUri: Uri): Boolean = withContext(Dispatchers.IO) {
         var socket: Socket? = null
         try {
             Log.d(tag, "Attempting to send file to $hostAddress:$port")
@@ -167,7 +167,7 @@ class FileTransferManager(
                 Log.e(tag, "Could not open InputStream for Uri: $fileUri")
                 onError("No se pudo abrir el archivo seleccionado.")
                 socket.close()
-                return@withContext
+                return@withContext false
             }
 
             val buffer = ByteArray(4096)
@@ -186,10 +186,11 @@ class FileTransferManager(
 
             Log.d(tag, "File sent successfully: $fileName")
             onProgress(fileName, fileSize, fileSize, true)
-
+            true
         } catch (e: Exception) {
             Log.e(tag, "Error sending file", e)
             onError("Error al enviar archivo: ${e.localizedMessage}")
+            false
         } finally {
             try {
                 socket?.close()
