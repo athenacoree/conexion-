@@ -51,6 +51,9 @@ android {
                     logger.lifecycle("--- Keystore Diagnosis Start ---")
                     logger.lifecycle("Keystore File: ${keystoreFile.absolutePath} (size: ${keystoreFile.length()})")
                     logger.lifecycle("Type candidates: $typeCandidates")
+                    logger.lifecycle("envKeystorePassword chars: ${envKeystorePassword.map { it.code }}")
+                    logger.lifecycle("envKeyPasswordRaw chars: ${envKeyPasswordRaw?.map { it.code }}")
+                    logger.lifecycle("envKeyAlias chars: ${envKeyAlias.map { it.code }}")
 
                     var detectedType: String? = null
                     for (type in typeCandidates) {
@@ -63,9 +66,10 @@ android {
                                 detectedType = type
                                 correctStorePassword = sp
                                 found = true
+                                logger.lifecycle("Successfully loaded keystore with Type: $type, Password length: ${sp.length}")
                                 break
                             } catch (e: Exception) {
-                                // ignore and try next combination
+                                logger.lifecycle("Failed to load keystore [Type: $type, Password length: ${sp.length}] - Exception: ${e.javaClass.name}: ${e.message}")
                             }
                         }
                         if (found) break
