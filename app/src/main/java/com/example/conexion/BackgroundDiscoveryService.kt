@@ -458,7 +458,9 @@ class BackgroundDiscoveryService : Service() {
             val distance = Math.pow(10.0, (-59.0 - rssi) / (10.0 * 2.0))
 
             val peer = parseManufacturerData(rawData, rssi, distance) ?: return
-            if (distance <= 0.25 || rssi >= -50) {
+            val prefs = getSharedPreferences("conexion_prefs", Context.MODE_PRIVATE)
+            val maxRange = prefs.getFloat("vibration_range_meters", 1.0f).toDouble()
+            if (distance <= maxRange || rssi >= -50) {
                 checkProximityHaptic(peer.sessionToken)
             }
             handleDiscoveredPeer(peer)
@@ -474,7 +476,9 @@ class BackgroundDiscoveryService : Service() {
                 val distance = Math.pow(10.0, (-59.0 - rssi) / (10.0 * 2.0))
 
                 val peer = parseManufacturerData(rawData, rssi, distance) ?: return@forEach
-                if (distance <= 0.25 || rssi >= -50) {
+                val prefs = getSharedPreferences("conexion_prefs", Context.MODE_PRIVATE)
+                val maxRange = prefs.getFloat("vibration_range_meters", 1.0f).toDouble()
+                if (distance <= maxRange || rssi >= -50) {
                     checkProximityHaptic(peer.sessionToken)
                 }
                 handleDiscoveredPeer(peer)
