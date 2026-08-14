@@ -34,6 +34,7 @@ import coil.compose.AsyncImage
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
@@ -67,6 +68,27 @@ class MainActivity : ComponentActivity() {
     private lateinit var dbHelper: DatabaseHelper
 
     private var audioBeaconEmitter: AudioBeaconEmitter? = null
+
+    // Remote audio playback state
+    private lateinit var remoteAudioPlayer: RemoteAudioPlayer
+    private var isAutoPlayAudioEnabled = mutableStateOf(false)
+
+    // Screen sharing configurations
+    private var isScreenShareEnabled = mutableStateOf(false)
+    private var screenShareResolution = mutableStateOf("1080p")
+    private var screenShareFps = mutableStateOf(30)
+    private var screenShareQuality = mutableStateOf("Alta")
+
+    // Active screen sharing states
+    private var activeScreenShareSender = mutableStateOf(false)
+    private var activeScreenShareReceiver = mutableStateOf<ScreenShareSession?>(null)
+
+    data class ScreenShareSession(
+        val peerName: String,
+        val resolution: String,
+        val fps: Int,
+        val quality: String
+    )
 
     // App state observables
     private var isWifiEnabledState = mutableStateOf(false)
@@ -230,6 +252,22 @@ class MainActivity : ComponentActivity() {
             }
         )
 
+        remoteAudioPlayer = RemoteAudioPlayer(this)
+        fileTransferManager.onAudioPlayRequested = { uri, fileName ->
+            remoteAudioPlayer.play(uri, fileName)
+            Toast.makeText(this, "Reproduciendo audio remoto: $fileName", Toast.LENGTH_LONG).show()
+        }
+
+        sessionManager.onScreenShareStarted = { peerName, resolution, fps, quality ->
+            activeScreenShareReceiver.value = ScreenShareSession(peerName, resolution, fps, quality)
+            Toast.makeText(this, "¡$peerName está compartiendo su pantalla!", Toast.LENGTH_SHORT).show()
+        }
+        sessionManager.onScreenShareStopped = {
+            activeScreenShareReceiver.value = null
+            activeScreenShareSender.value = false
+            Toast.makeText(this, "La transmisión de pantalla ha finalizado.", Toast.LENGTH_SHORT).show()
+        }
+
         wifiP2pHelper = WifiP2pHelper(
             context = this,
             onConnectionChanged = { info ->
@@ -263,7 +301,7 @@ class MainActivity : ComponentActivity() {
                                 while (!sent && attempts < 5) {
                                     attempts++
                                     Log.d(tag, "Attempt $attempts: Sending automatic file: $uri to $hostAddress")
-                                    sent = fileTransferManager.sendFile(hostAddress, uri)
+                                    sent = fileTransferManager.sendFile(hostAddress, uri, isAutoPlayAudioEnabled.value)
                                     if (!sent) {
                                         delay(1500)
                                     }
@@ -425,6 +463,7 @@ class MainActivity : ComponentActivity() {
         wifiP2pHelper.unregister()
         fileTransferManager.stopServer()
         airShareServer?.stop()
+        remoteAudioPlayer.stop()
 
         if (currentConnectionInfo.value == null) {
             toggleWifi(false)
@@ -1073,7 +1112,7 @@ class MainActivity : ComponentActivity() {
 
                     lifecycleScope.launch {
                         Toast.makeText(context, "Enviando archivo a $hostAddress...", Toast.LENGTH_SHORT).show()
-                        fileTransferManager.sendFile(hostAddress, fileUri)
+                        fileTransferManager.sendFile(hostAddress, fileUri, isAutoPlayAudioEnabled.value)
                     }
                 } else {
                     Toast.makeText(context, "Por favor, conéctate primero", Toast.LENGTH_SHORT).show()
@@ -1410,6 +1449,121 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 16.dp),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "Configuración de Compartir Pantalla",
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Permitir Compartir Pantalla",
+                                fontWeight = FontWeight.Bold,
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                            Text(
+                                text = "Habilita la capacidad de transmitir pantalla a otros dispositivos.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.Gray
+                            )
+                        }
+                        Switch(
+                            checked = isScreenShareEnabled.value,
+                            onCheckedChange = { isScreenShareEnabled.value = it }
+                        )
+                    }
+
+                    if (isScreenShareEnabled.value) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        HorizontalDivider()
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // Resolution Selector
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("Resolución:", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                            Row {
+                                listOf("720p", "1080p", "Original").forEach { res ->
+                                    val isSelected = screenShareResolution.value == res
+                                    Box(
+                                        modifier = Modifier
+                                            .padding(horizontal = 4.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(if (isSelected) MaterialTheme.colorScheme.primary else Color.Gray.copy(alpha = 0.2f))
+                                            .clickable { screenShareResolution.value = res }
+                                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                                    ) {
+                                        Text(res, color = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // Quality Selector
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("Calidad:", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                            Row {
+                                listOf("Baja", "Media", "Alta").forEach { q ->
+                                    val isSelected = screenShareQuality.value == q
+                                    Box(
+                                        modifier = Modifier
+                                            .padding(horizontal = 4.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(if (isSelected) MaterialTheme.colorScheme.primary else Color.Gray.copy(alpha = 0.2f))
+                                            .clickable { screenShareQuality.value = q }
+                                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                                    ) {
+                                        Text(q, color = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // FPS Slider
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text("FPS (Fotogramas):", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                Text("${screenShareFps.value} FPS", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, fontSize = 14.sp)
+                            }
+                            Slider(
+                                value = screenShareFps.value.toFloat(),
+                                onValueChange = { screenShareFps.value = it.toInt() },
+                                valueRange = 15f..60f,
+                                steps = 2
+                            )
+                        }
+                    }
+                }
+            }
+
             Spacer(modifier = Modifier.height(24.dp))
 
             // TAREA 4 — Botón de envío manual + integración con el share sheet
@@ -1660,7 +1814,7 @@ class MainActivity : ComponentActivity() {
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Text(
-                            text = "Compartir Archivos",
+                            text = "Compartir Archivos y Funciones",
                             fontWeight = FontWeight.Bold,
                             style = MaterialTheme.typography.titleMedium
                         )
@@ -1670,6 +1824,43 @@ class MainActivity : ComponentActivity() {
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Text("Seleccionar y Enviar Archivo")
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "Reproducir automáticamente si es audio",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Switch(
+                                checked = isAutoPlayAudioEnabled.value,
+                                onCheckedChange = { isAutoPlayAudioEnabled.value = it }
+                            )
+                        }
+
+                        if (isScreenShareEnabled.value) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Button(
+                                onClick = {
+                                    activeScreenShareSender.value = true
+                                    sessionManager.sendScreenShareStart(
+                                        myNameState.value,
+                                        screenShareResolution.value,
+                                        screenShareFps.value,
+                                        screenShareQuality.value
+                                    )
+                                    Toast.makeText(context, "Iniciando transmisión de pantalla...", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFA855F7))
+                            ) {
+                                Text("🖥️ Compartir Pantalla")
+                            }
                         }
 
                         AnimatedVisibility(visible = isTransferring.value) {
@@ -2065,6 +2256,261 @@ class MainActivity : ComponentActivity() {
                             }
                         ) {
                             Text("Rechazar")
+                        }
+                    }
+                )
+            }
+
+            // Floating remote music player
+            if (remoteAudioPlayer.currentTrackName.value.isNotEmpty()) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                            // Pulsing music note icon
+                            val infiniteTransition = rememberInfiniteTransition()
+                            val pulseScale by infiniteTransition.animateFloat(
+                                initialValue = 0.9f,
+                                targetValue = 1.15f,
+                                animationSpec = infiniteRepeatable(
+                                    animation = tween(800, easing = FastOutSlowInEasing),
+                                    repeatMode = RepeatMode.Reverse
+                                )
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .scale(if (remoteAudioPlayer.isPlaying.value) pulseScale else 1f)
+                                    .clip(CircleShape)
+                                    .background(MaterialTheme.colorScheme.primary),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text("🎵", fontSize = 20.sp)
+                            }
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column {
+                                Text(
+                                    text = "Reproduciendo Audio Remoto",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    text = remoteAudioPlayer.currentTrackName.value,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 13.sp,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    maxLines = 1
+                                )
+                            }
+                        }
+
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(onClick = { remoteAudioPlayer.togglePlayPause() }) {
+                                Text(if (remoteAudioPlayer.isPlaying.value) "⏸" else "▶", fontSize = 18.sp)
+                            }
+                            IconButton(onClick = { remoteAudioPlayer.stop() }) {
+                                Text("⏹", fontSize = 18.sp)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Screen Sharing Sender Overlay
+            if (activeScreenShareSender.value) {
+                AlertDialog(
+                    onDismissRequest = {},
+                    title = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            val infiniteTransition = rememberInfiniteTransition()
+                            val pulseAlpha by infiniteTransition.animateFloat(
+                                initialValue = 0.3f,
+                                targetValue = 1f,
+                                animationSpec = infiniteRepeatable(
+                                    animation = tween(1000, easing = LinearEasing),
+                                    repeatMode = RepeatMode.Reverse
+                                )
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .size(14.dp)
+                                    .clip(CircleShape)
+                                    .background(Color.Red.copy(alpha = pulseAlpha))
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Compartiendo Pantalla", fontWeight = FontWeight.Bold)
+                        }
+                    },
+                    text = {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                            Text(
+                                text = "Tu pantalla se está transmitiendo en tiempo real al dispositivo conectado.",
+                                textAlign = TextAlign.Center,
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(120.dp),
+                                colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.05f))
+                            ) {
+                                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text("🖥️ ✨ 📱", fontSize = 28.sp)
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        Text(
+                                            text = "${screenShareResolution.value} • ${screenShareFps.value} FPS • Calidad ${screenShareQuality.value}",
+                                            fontSize = 11.sp,
+                                            color = Color.Gray,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                activeScreenShareSender.value = false
+                                sessionManager.sendScreenShareStop()
+                                Toast.makeText(context, "Transmisión detenida.", Toast.LENGTH_SHORT).show()
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                        ) {
+                            Text("Detener Transmisión")
+                        }
+                    }
+                )
+            }
+
+            // Screen Sharing Receiver Overlay
+            activeScreenShareReceiver.value?.let { session ->
+                AlertDialog(
+                    onDismissRequest = {},
+                    title = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(12.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFF10B981))
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Pantalla de ${session.peerName}", fontWeight = FontWeight.Bold)
+                        }
+                    },
+                    text = {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                            Text(
+                                text = "Recibiendo transmisión de pantalla.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.Gray
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            // High fidelity simulated screen preview mockup!
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(180.dp),
+                                border = androidx.compose.foundation.BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)),
+                                colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A))
+                            ) {
+                                Box(modifier = Modifier.fillMaxSize().padding(12.dp)) {
+                                    Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.SpaceBetween) {
+                                        // Header of cast mockup
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text("Conexion Cast", color = Color.White.copy(alpha = 0.7f), fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                            Text("12:00", color = Color.White.copy(alpha = 0.7f), fontSize = 10.sp)
+                                        }
+
+                                        // Pulse effect on mockup screen
+                                        Column(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalAlignment = Alignment.CenterHorizontally
+                                        ) {
+                                            val infiniteTransition = rememberInfiniteTransition()
+                                            val scale by infiniteTransition.animateFloat(
+                                                initialValue = 0.95f,
+                                                targetValue = 1.05f,
+                                                animationSpec = infiniteRepeatable(
+                                                    animation = tween(1200, easing = EaseInOutSine),
+                                                    repeatMode = RepeatMode.Reverse
+                                                )
+                                            )
+                                            Box(
+                                                modifier = Modifier
+                                                    .scale(scale)
+                                                    .size(54.dp)
+                                                    .clip(CircleShape)
+                                                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Text("📱", fontSize = 28.sp)
+                                            }
+                                            Spacer(modifier = Modifier.height(8.dp))
+                                            Text(
+                                                text = "Simulando pantalla remota...",
+                                                color = Color.White.copy(alpha = 0.5f),
+                                                fontSize = 9.sp
+                                            )
+                                        }
+
+                                        // Footer specs
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Text(
+                                                text = "Res: ${session.resolution}",
+                                                color = Color.White.copy(alpha = 0.4f),
+                                                fontSize = 9.sp
+                                            )
+                                            Text(
+                                                text = "FPS: ${session.fps}",
+                                                color = Color.White.copy(alpha = 0.4f),
+                                                fontSize = 9.sp
+                                            )
+                                            Text(
+                                                text = "Calidad: ${session.quality}",
+                                                color = Color.White.copy(alpha = 0.4f),
+                                                fontSize = 9.sp
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                activeScreenShareReceiver.value = null
+                                sessionManager.sendScreenShareStop()
+                                Toast.makeText(context, "Transmisión detenida.", Toast.LENGTH_SHORT).show()
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                        ) {
+                            Text("Cerrar")
                         }
                     }
                 )

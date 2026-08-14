@@ -27,6 +27,10 @@ class SessionManager(
 
     private var outWriter: PrintWriter? = null
 
+    // Screen sharing callbacks
+    var onScreenShareStarted: ((peerName: String, resolution: String, fps: Int, quality: String) -> Unit)? = null
+    var onScreenShareStopped: (() -> Unit)? = null
+
     fun startServer() {
         if (isRunning) return
         isRunning = true
@@ -103,6 +107,21 @@ class SessionManager(
         val cmd = parts[0]
 
         when (cmd) {
+            "SCREEN_SHARE_START" -> {
+                val subparts = message.split("|")
+                val rName = subparts.getOrNull(1) ?: "Dispositivo"
+                val rRes = subparts.getOrNull(2) ?: "1080p"
+                val rFps = subparts.getOrNull(3)?.toIntOrNull() ?: 30
+                val rQuality = subparts.getOrNull(4) ?: "Alta"
+                scope.launch(Dispatchers.Main) {
+                    onScreenShareStarted?.invoke(rName, rRes, rFps, rQuality)
+                }
+            }
+            "SCREEN_SHARE_STOP" -> {
+                scope.launch(Dispatchers.Main) {
+                    onScreenShareStopped?.invoke()
+                }
+            }
             "CHAT_REQ" -> {
                 val peerName = parts.getOrNull(1) ?: "Dispositivo"
                 scope.launch(Dispatchers.Main) {
@@ -161,6 +180,14 @@ class SessionManager(
 
     fun sendContactData(name: String, phone: String) {
         sendRaw("CONTACT_DATA|$name|$phone")
+    }
+
+    fun sendScreenShareStart(myName: String, resolution: String, fps: Int, quality: String) {
+        sendRaw("SCREEN_SHARE_START|$myName|$resolution|$fps|$quality")
+    }
+
+    fun sendScreenShareStop() {
+        sendRaw("SCREEN_SHARE_STOP")
     }
 
     private fun sendRaw(payload: String) {

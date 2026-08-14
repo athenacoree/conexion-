@@ -83,6 +83,7 @@ class BackgroundDiscoveryService : Service() {
     private lateinit var wifiP2pHelper: WifiP2pHelper
     private lateinit var fileTransferManager: FileTransferManager
     private lateinit var dbHelper: DatabaseHelper
+    private lateinit var remoteAudioPlayer: RemoteAudioPlayer
 
     private val serviceReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -142,6 +143,8 @@ class BackgroundDiscoveryService : Service() {
             }
         )
 
+        remoteAudioPlayer = RemoteAudioPlayer(this)
+
         fileTransferManager = FileTransferManager(
             context = this,
             onIncomingFileRequest = { fileName, fileSize, onAccept, onReject ->
@@ -155,6 +158,12 @@ class BackgroundDiscoveryService : Service() {
                 showFileProgressNotification(fileName, bytes, total, completed)
             }
         )
+
+        fileTransferManager.onAudioPlayRequested = { uri, fileName ->
+            Log.d(tag, "Background remote audio play requested: $fileName")
+            remoteAudioPlayer.play(uri, fileName)
+            showToast("Reproduciendo audio remoto: $fileName")
+        }
 
         audioBeaconListener = AudioBeaconListener(
             onTokenDecoded = { token ->
@@ -406,6 +415,7 @@ class BackgroundDiscoveryService : Service() {
         } catch (e: Exception) {}
         wifiP2pHelper.unregister()
         fileTransferManager.stopServer()
+        remoteAudioPlayer.stop()
         Log.d(tag, "Service onDestroy")
     }
 
