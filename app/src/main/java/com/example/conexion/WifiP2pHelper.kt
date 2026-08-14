@@ -20,7 +20,9 @@ import kotlinx.coroutines.*
 data class PeerInfo(
     val device: WifiP2pDevice,
     val userName: String,
-    val sessionToken: String = ""
+    val sessionToken: String = "",
+    val avatarIndex: Int = 0,
+    val phoneNumber: String = ""
 )
 
 class WifiP2pHelper(
@@ -162,11 +164,17 @@ class WifiP2pHelper(
         if (manager == null || channel == null) return
         setDeviceName(userName)
 
+        val prefs = context.getSharedPreferences("conexion_prefs", Context.MODE_PRIVATE)
+        val avatarIdx = prefs.getInt("avatar_index", 0).toString()
+        val phoneNum = prefs.getString("phone_number", "") ?: ""
+
         manager.clearLocalServices(channel, object : WifiP2pManager.ActionListener {
             override fun onSuccess() {
                 val record = mapOf(
                     "name" to userName,
-                    "token" to sessionToken
+                    "token" to sessionToken,
+                    "avatar" to avatarIdx,
+                    "phone" to phoneNum
                 )
                 localServiceInfo = WifiP2pDnsSdServiceInfo.newInstance(
                     "_conexion",
@@ -202,9 +210,11 @@ class WifiP2pHelper(
                 Log.d(tag, "TXT record received: $txtRecordMap from ${srcDevice.deviceAddress}")
                 val name = txtRecordMap["name"] ?: "Usuario Desconocido"
                 val token = txtRecordMap["token"] ?: ""
+                val avatarIdx = txtRecordMap["avatar"]?.toIntOrNull() ?: 0
+                val phone = txtRecordMap["phone"] ?: ""
 
                 if (token.isNotEmpty()) {
-                    val peer = PeerInfo(srcDevice, name, token)
+                    val peer = PeerInfo(srcDevice, name, token, avatarIdx, phone)
                     discoveredServicePeers[srcDevice.deviceAddress] = peer
                     tokenToPeerMap[token] = peer
                     onPeersDiscovered(discoveredServicePeers.values.toList())

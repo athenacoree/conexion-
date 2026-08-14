@@ -62,6 +62,7 @@ class BackgroundDiscoveryService : Service() {
     private var currentUserName = "Mi Dispositivo"
     private var currentWifiMac = "00:00:00:00:00:00"
     private var currentSessionToken = "000000000000"
+    private var currentAvatarIndex = 0
 
     private var currentBeaconState = BeaconState.IDLE
     private var currentSendingToken = "000000000000"
@@ -74,6 +75,7 @@ class BackgroundDiscoveryService : Service() {
 
     private var audioBeaconListener: AudioBeaconListener? = null
     private val recentlyDetectedPeerNames = mutableMapOf<String, String>()
+    private val recentlyDetectedPeerAvatars = mutableMapOf<String, Int>()
 
     // TAREA B: Tracks active sending peers in the last 15 seconds
     private val activeSendingPeers = mutableMapOf<String, Long>()
@@ -128,6 +130,9 @@ class BackgroundDiscoveryService : Service() {
         if (incomingToken != null) {
             currentSessionToken = incomingToken
         }
+
+        val prefs = getSharedPreferences("conexion_prefs", Context.MODE_PRIVATE)
+        currentAvatarIndex = prefs.getInt("avatar_index", 0)
 
         when (action) {
             ACTION_START -> {
@@ -261,6 +266,7 @@ class BackgroundDiscoveryService : Service() {
             val payload = buildManufacturerData(
                 state = if (currentBeaconState == BeaconState.SENDING) 1 else 0,
                 sessionToken = if (currentBeaconState == BeaconState.SENDING) currentSendingToken else currentSessionToken,
+                avatarIndex = currentAvatarIndex,
                 userName = currentUserName
             )
             val advData = AdvertiseData.Builder()
@@ -378,7 +384,8 @@ class BackgroundDiscoveryService : Service() {
         }
 
         recentlyDetectedPeerNames[peer.sessionToken] = peer.userName
-        Log.d(tag, "Discovered BLE peer: name=${peer.userName}, token=${peer.sessionToken}, state=${peer.state}")
+        recentlyDetectedPeerAvatars[peer.sessionToken] = peer.avatarIndex
+        Log.d(tag, "Discovered BLE peer: name=${peer.userName}, token=${peer.sessionToken}, state=${peer.state}, avatarIndex=${peer.avatarIndex}")
 
         if (peer.state == 1) { // Peer is SENDING
             // Record active sending peer
@@ -406,6 +413,7 @@ class BackgroundDiscoveryService : Service() {
                         setPackage(packageName)
                         putExtra(EXTRA_PEER_NAME, peer.userName)
                         putExtra(EXTRA_PEER_TOKEN, peer.sessionToken)
+                        putExtra("EXTRA_PEER_AVATAR", peer.avatarIndex)
                         putExtra("EXTRA_IS_AMBIGUOUS", true)
                     }
                     sendBroadcast(intent)
@@ -431,6 +439,7 @@ class BackgroundDiscoveryService : Service() {
                         setPackage(packageName)
                         putExtra(EXTRA_PEER_NAME, peer.userName)
                         putExtra(EXTRA_PEER_TOKEN, peer.sessionToken)
+                        putExtra("EXTRA_PEER_AVATAR", peer.avatarIndex)
                         putExtra("EXTRA_IS_AMBIGUOUS", false)
                     }
                     sendBroadcast(intent)
@@ -447,6 +456,7 @@ class BackgroundDiscoveryService : Service() {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra(EXTRA_PEER_NAME, peer.userName)
             putExtra(EXTRA_PEER_TOKEN, peer.sessionToken)
+            putExtra("EXTRA_PEER_AVATAR", peer.avatarIndex)
         }
         val pendingIntent = PendingIntent.getActivity(
             this, 1, intent,
@@ -467,7 +477,7 @@ class BackgroundDiscoveryService : Service() {
         manager.notify(MATCH_NOTIFICATION_ID, notification)
     }
 
-    private fun buildManufacturerData(state: Int, sessionToken: String, userName: String): ByteArray {
+    private fun buildManufacturerData(state: Int, sessionToken: String, avatarIndex: Int, userName: String): ByteArray {
         val stream = ByteArrayOutputStream()
         val dos = DataOutputStream(stream)
         dos.writeByte(state) // 1 byte state (0 = IDLE, 1 = SENDING)
@@ -484,6 +494,8 @@ class BackgroundDiscoveryService : Service() {
         }
         dos.write(tokenBytes) // 6 bytes
 
+        dos.writeByte(avatarIndex) // 1 byte avatar index
+
         // Write truncated User Name
         val nameBytes = userName.toByteArray(Charsets.UTF_8)
         val nameLength = nameBytes.size.coerceAtMost(10)
@@ -493,7 +505,7 @@ class BackgroundDiscoveryService : Service() {
     }
 
     private fun parseManufacturerData(data: ByteArray): BlePeer? {
-        if (data.size < 7) return null // 1 byte state + 6 bytes token = 7 bytes minimum check
+        if (data.size < 8) return null // 1 byte state + 6 bytes token + 1 byte avatar = 8 bytes minimum check
         return try {
             val buffer = ByteBuffer.wrap(data)
             val state = buffer.get().toInt()
@@ -502,14 +514,17 @@ class BackgroundDiscoveryService : Service() {
             buffer.get(tokenBytes)
             val sessionToken = tokenBytes.joinToString("") { String.format("%02X", it) }
 
-            val nameBytes = ByteArray(data.size - 7)
+            val avatarIndex = buffer.get().toInt()
+
+            val nameBytes = ByteArray(data.size - 8)
             buffer.get(nameBytes)
             val userName = String(nameBytes, Charsets.UTF_8).trim()
 
             BlePeer(
                 userName = if (userName.isEmpty()) "Usuario BLE" else userName,
                 sessionToken = sessionToken,
-                state = state
+                state = state,
+                avatarIndex = avatarIndex
             )
         } catch (e: Exception) {
             Log.e(tag, "Failed to parse manufacturer data", e)
@@ -520,6 +535,7 @@ class BackgroundDiscoveryService : Service() {
     data class BlePeer(
         val userName: String,
         val sessionToken: String,
-        val state: Int
+        val state: Int,
+        val avatarIndex: Int = 0
     )
 }
