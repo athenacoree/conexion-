@@ -105,6 +105,25 @@ class WifiP2pHelper(
                 }
                 WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION -> {
                     Log.d(tag, "Wi-Fi P2P Peers Changed")
+                    manager?.requestPeers(channel) { peerList ->
+                        val list = peerList.deviceList.toList()
+                        Log.d(tag, "Discovered standard P2P peers: ${list.size}")
+                        list.forEach { dev ->
+                            if (!discoveredServicePeers.containsKey(dev.deviceAddress)) {
+                                val peer = PeerInfo(
+                                    device = dev,
+                                    userName = if (dev.deviceName.isNullOrEmpty()) "Dispositivo P2P" else dev.deviceName,
+                                    sessionToken = dev.deviceAddress,
+                                    avatarIndex = (dev.deviceAddress.hashCode() and 0x7FFFFFFF) % 6,
+                                    phoneNumber = "",
+                                    rssi = -55,
+                                    distanceMeters = 1.2
+                                )
+                                discoveredServicePeers[dev.deviceAddress] = peer
+                            }
+                        }
+                        onPeersDiscovered(discoveredServicePeers.values.toList())
+                    }
                 }
                 WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> {
                     val networkInfo = intent.getParcelableExtra<android.net.NetworkInfo>(WifiP2pManager.EXTRA_NETWORK_INFO)
@@ -210,6 +229,16 @@ class WifiP2pHelper(
         if (manager == null || channel == null) return
 
         discoveredServicePeers.clear()
+
+        // Also initiate standard P2P peer discovery so devices are always found
+        manager.discoverPeers(channel, object : WifiP2pManager.ActionListener {
+            override fun onSuccess() {
+                Log.d(tag, "Wi-Fi P2P discoverPeers initiated")
+            }
+            override fun onFailure(reason: Int) {
+                Log.e(tag, "Wi-Fi P2P discoverPeers failed: $reason")
+            }
+        })
 
         manager.setDnsSdResponseListeners(channel,
             { instanceName, registrationType, srcDevice ->

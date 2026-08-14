@@ -967,8 +967,9 @@ class MainActivity : ComponentActivity() {
                         connectedDeviceAddress = currentConnectionInfo.value?.groupOwnerAddress?.hostAddress ?: "",
                         isSearching = false,
                         onStartDiscovery = {
+                            wifiP2pHelper.startAdvertising(myNameState.value, myDeviceIdState.value)
                             wifiP2pHelper.startDiscovery()
-                            Toast.makeText(context, "Buscando dispositivos...", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "Buscando dispositivos y anunciando presencia...", Toast.LENGTH_SHORT).show()
                         },
                         onSendAcousticPulse = {
                             val token = generateSessionToken()

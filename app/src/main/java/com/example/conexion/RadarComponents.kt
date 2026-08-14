@@ -563,15 +563,15 @@ fun ModernSonarRadar(
             val list = mutableListOf<SonarNode>()
             peers.forEachIndexed { idx, p ->
                 val angle = 35f + idx * 85f
-                val distanceFactor = 0.48f + (idx % 2) * 0.22f
-                list.add(SonarNode.WifiPeer(p, angle, distanceFactor))
+                val distFactor = (p.distanceMeters / 5.0).coerceIn(0.25, 0.92).toFloat()
+                list.add(SonarNode.WifiPeer(p, angle, distFactor))
             }
             var bleCount = 0
             blePeers.forEach { bp ->
                 if (peers.none { it.sessionToken == bp.sessionToken }) {
                     val angle = 125f + bleCount * 90f
-                    val distanceFactor = 0.58f + (bleCount % 2) * 0.22f
-                    list.add(SonarNode.BlePeer(bp, angle, distanceFactor))
+                    val distFactor = (bp.distanceMeters / 5.0).coerceIn(0.25, 0.92).toFloat()
+                    list.add(SonarNode.BlePeer(bp, angle, distFactor))
                     bleCount++
                 }
             }
@@ -640,8 +640,12 @@ fun ModernSonarRadar(
                                         color = if (node is SonarNode.WifiPeer) Color(0xFF34C759) else MaterialTheme.colorScheme.primary
                                     )
                                     Spacer(modifier = Modifier.width(3.dp))
+                                    val rssiVal = when(node) {
+                                        is SonarNode.WifiPeer -> node.peer.rssi
+                                        is SonarNode.BlePeer -> node.blePeer.rssi
+                                    }
                                     Text(
-                                        text = "📶 -${(45 + (node.avatarIndex * 3) % 25)}dBm",
+                                        text = "📶 ${rssiVal}dBm",
                                         fontSize = 8.sp,
                                         fontWeight = FontWeight.SemiBold,
                                         color = Color(0xFF30D158)

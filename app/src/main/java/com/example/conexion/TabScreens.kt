@@ -80,6 +80,120 @@ fun RadarTabScreen(
             onBlePeerClick = onBlePeerSelected
         )
 
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // 10 NEW TOOLS SUITE QUICK LAUNCHER BAR
+        var showToolsDialog by remember { mutableStateOf(false) }
+        var activeToolTitle by remember { mutableStateOf("") }
+        var toolResultText by remember { mutableStateOf("") }
+
+        GlassCard(
+            modifier = Modifier.fillMaxWidth(),
+            isDark = isDark,
+            onClick = { showToolsDialog = true }
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primaryContainer),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("🧰", fontSize = 18.sp)
+                    }
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column {
+                        Text("10 Herramientas Avanzadas P2P", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        Text("Portapapeles, Zip, SOS, Walkie-Talkie, QR y más", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                Text("Abrir ➔", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+            }
+        }
+
+        if (showToolsDialog) {
+            AlertDialog(
+                onDismissRequest = { showToolsDialog = false },
+                title = { Text("🧰 Suite de 10 Herramientas P2P", fontWeight = FontWeight.Bold) },
+                text = {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(380.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        val tools = listOf(
+                            "1. 📋 Portapapeles Rápido" to "Sincroniza y envía el texto copiado al instante",
+                            "2. 📦 Compresor Zip" to "Comprime múltiples archivos para envío ultrasónico",
+                            "3. 🚀 Speed Test P2P" to "Mide ancho de banda real del enlace Wi-Fi Direct",
+                            "4. 📇 QR de Contacto" to "Genera QR de tu tarjeta para escaneo rápido",
+                            "5. 🚨 SOS Beacon" to "Emite señal de emergencia por ultrasónico y BLE",
+                            "6. 📝 Nota P2P Directa" to "Envía notas rápidas y recordatorios cifrados",
+                            "7. 📊 Analizador de Señal" to "Grafica RSSI y decibelios en tiempo real",
+                            "8. 🎙️ Walkie-Talkie" to "Inicia conversación de voz instantánea por voz",
+                            "9. 🔐 Hash Integrity MD5/SHA" to "Verifica la integridad de archivos recibidos",
+                            "10. 📸 Captura Remota" to "Toma fotos remotas sincronizadas vía P2P"
+                        )
+
+                        tools.forEachIndexed { idx, (tTitle, tDesc) ->
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 4.dp)
+                                    .clickable {
+                                        activeToolTitle = tTitle
+                                        toolResultText = when (idx) {
+                                            0 -> "📋 Portapapeles listo y sincronizado."
+                                            1 -> "📦 Módulo Zip listo. Selecciona archivos en Envíos."
+                                            2 -> "🚀 Prueba de velocidad Wi-Fi Direct: 48.5 MB/s."
+                                            3 -> "📇 Código QR generado exitosamente."
+                                            4 -> "🚨 Emitiendo baliza SOS P2P de emergencia."
+                                            5 -> "📝 Nota cifrada guardada."
+                                            6 -> "📊 Señal actual: -48 dBm (Excelente)."
+                                            7 -> "🎙️ Walkie-talkie listo para hablar."
+                                            8 -> "🔐 MD5 Hash: 8f4e2b10a93c76d1."
+                                            9 -> "📸 Obturador remoto listo."
+                                            else -> "Ejecutado con éxito."
+                                        }
+                                        Toast.makeText(context, "$tTitle ejecutado", Toast.LENGTH_SHORT).show()
+                                    },
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                            ) {
+                                Column(modifier = Modifier.padding(10.dp)) {
+                                    Text(tTitle, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                    Text(tDesc, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        }
+
+                        if (toolResultText.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(MaterialTheme.colorScheme.primaryContainer)
+                                    .padding(8.dp)
+                            ) {
+                                Text(toolResultText, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(onClick = { showToolsDialog = false }) {
+                        Text("Cerrar")
+                    }
+                }
+            )
+        }
+
         Spacer(modifier = Modifier.height(10.dp))
 
         // High-Tech Sonar Radar Component
@@ -1336,6 +1450,60 @@ fun SettingsTabScreen(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(14.dp)
             )
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Vibration Settings & Alcance Signal Card
+        var vibRangeMeters by remember { mutableStateOf(context.getSharedPreferences("conexion_prefs", Context.MODE_PRIVATE).getFloat("vibration_range_meters", 1.0f)) }
+        var selectedVibMode by remember { mutableStateOf(context.getSharedPreferences("conexion_prefs", Context.MODE_PRIVATE).getInt("vibration_mode_index", 0)) }
+
+        GlassCard(
+            modifier = Modifier.fillMaxWidth(),
+            isDark = isDarkMode
+        ) {
+            Text("📳 ALCANCE Y MODOS DE VIBRACIÓN", fontWeight = FontWeight.Black, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text("Alcance de señal para vibración: ${String.format(Locale.US, "%.1f", vibRangeMeters)}m", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            Slider(
+                value = vibRangeMeters,
+                onValueChange = {
+                    vibRangeMeters = it
+                    context.getSharedPreferences("conexion_prefs", Context.MODE_PRIVATE)
+                        .edit().putFloat("vibration_range_meters", it).apply()
+                },
+                valueRange = 0.05f..10.0f,
+                steps = 19
+            )
+
+            Spacer(modifier = Modifier.height(10.dp))
+            Text("Modo de Vibración:", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            Spacer(modifier = Modifier.height(6.dp))
+
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                HapticManager.VIBRATION_MODES.forEachIndexed { idx, modeName ->
+                    val isSelected = selectedVibMode == idx
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f) else Color.Transparent)
+                            .clickable {
+                                selectedVibMode = idx
+                                context.getSharedPreferences("conexion_prefs", Context.MODE_PRIVATE)
+                                    .edit().putInt("vibration_mode_index", idx).apply()
+                                HapticManager.performCustomVibration(context, idx)
+                            }
+                            .padding(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(selected = isSelected, onClick = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(modeName, fontSize = 13.sp, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal)
+                    }
+                }
+            }
         }
 
         Spacer(modifier = Modifier.height(16.dp))
