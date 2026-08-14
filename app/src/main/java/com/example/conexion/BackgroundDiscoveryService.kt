@@ -7,18 +7,17 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.le.*
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
-import android.os.ParcelUuid
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
 import java.nio.ByteBuffer
-import java.util.UUID
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -80,6 +79,34 @@ class BackgroundDiscoveryService : Service() {
     // TAREA B: Tracks active sending peers in the last 15 seconds
     private val activeSendingPeers = mutableMapOf<String, Long>()
 
+    // Background instances of WifiP2p and FileTransfer for background connections
+    private lateinit var wifiP2pHelper: WifiP2pHelper
+    private lateinit var fileTransferManager: FileTransferManager
+    private lateinit var dbHelper: DatabaseHelper
+
+    private val serviceReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val action = intent?.action ?: return
+            val token = intent.getStringExtra(EXTRA_PEER_TOKEN) ?: ""
+            Log.d(tag, "Service receiver got action: $action, token: $token")
+            if (action == "com.example.conexion.ACTION_NOTIFICATION_ACCEPT") {
+                val peer = wifiP2pHelper.findPeerByToken(token)
+                if (peer != null) {
+                    wifiP2pHelper.connectToPeer(peer)
+                    showToast("Conectando con ${peer.userName}...")
+                } else {
+                    wifiP2pHelper.startDiscoveryForToken(token, "Dispositivo")
+                    showToast("Buscando red para conectar...")
+                }
+                val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                manager.cancel(MATCH_NOTIFICATION_ID)
+            } else if (action == "com.example.conexion.ACTION_NOTIFICATION_REJECT") {
+                val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                manager.cancel(MATCH_NOTIFICATION_ID)
+            }
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         Log.d(tag, "Service onCreate")
@@ -88,13 +115,58 @@ class BackgroundDiscoveryService : Service() {
         advertiser = bluetoothAdapter?.bluetoothLeAdvertiser
         scanner = bluetoothAdapter?.bluetoothLeScanner
 
+        dbHelper = DatabaseHelper(this)
+
+        wifiP2pHelper = WifiP2pHelper(
+            context = this,
+            onConnectionChanged = { info ->
+                if (info != null && info.groupFormed) {
+                    Log.d(tag, "Background P2P connected. Starting file server.")
+                    serviceScope.launch {
+                        fileTransferManager.startServer()
+                    }
+                } else {
+                    fileTransferManager.stopServer()
+                }
+            },
+            onPeersDiscovered = { peers ->
+                peers.forEach { p ->
+                    dbHelper.saveOrUpdatePeer(p.userName, p.sessionToken, p.phoneNumber, p.avatarIndex)
+                }
+            },
+            onConnectionRequestReceived = { peer ->
+                // Auto accept or trigger
+            },
+            onError = { err ->
+                Log.e(tag, "Background WifiP2pHelper error: $err")
+            }
+        )
+
+        fileTransferManager = FileTransferManager(
+            context = this,
+            onIncomingFileRequest = { fileName, fileSize, onAccept, onReject ->
+                Log.d(tag, "Background incoming file request: $fileName ($fileSize bytes)")
+                onAccept()
+            },
+            onError = { err ->
+                Log.e(tag, "Background file transfer error: $err")
+            },
+            onProgress = { fileName, bytes, total, completed ->
+                showFileProgressNotification(fileName, bytes, total, completed)
+            }
+        )
+
         audioBeaconListener = AudioBeaconListener(
             onTokenDecoded = { token ->
                 Log.d(tag, "Beacon decoded token: $token")
+                val name = recentlyDetectedPeerNames[token] ?: "Dispositivo ultrasónico"
+
+                showConnectionNotification(name, token)
+
                 val intent = Intent(ACTION_BEACON_TOKEN_DECODED).apply {
                     setPackage(packageName)
                     putExtra(EXTRA_PEER_TOKEN, token)
-                    putExtra(EXTRA_PEER_NAME, recentlyDetectedPeerNames[token] ?: "Dispositivo ultrasónico")
+                    putExtra(EXTRA_PEER_NAME, name)
                     putExtra("EXTRA_DECODE_SUCCESS", true)
                 }
                 sendBroadcast(intent)
@@ -110,6 +182,16 @@ class BackgroundDiscoveryService : Service() {
                 }
             }
         )
+
+        val filter = IntentFilter().apply {
+            addAction("com.example.conexion.ACTION_NOTIFICATION_ACCEPT")
+            addAction("com.example.conexion.ACTION_NOTIFICATION_REJECT")
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(serviceReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(serviceReceiver, filter)
+        }
 
         createNotificationChannel()
     }
@@ -180,7 +262,7 @@ class BackgroundDiscoveryService : Service() {
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "Búsqueda en Segundo Plano",
-                NotificationManager.IMPORTANCE_LOW
+                NotificationManager.IMPORTANCE_HIGH
             ).apply {
                 description = "Mantiene activa la búsqueda pasiva por Bluetooth de baja energía (BLE)"
             }
@@ -214,7 +296,6 @@ class BackgroundDiscoveryService : Service() {
             .build()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            // FIX 3: Combine both foreground service types with bitwise OR (connectedDevice | microphone)
             val serviceTypes = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
             } else {
@@ -229,14 +310,13 @@ class BackgroundDiscoveryService : Service() {
     @SuppressLint("MissingPermission")
     private fun startAdvertisingAndScanning() {
         try {
-            // Setup advertiser & scanner if not already fetched
             if (bluetoothAdapter == null) {
                 val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
                 bluetoothAdapter = bluetoothManager?.adapter
             }
             if (bluetoothAdapter?.isEnabled != true) {
                 Log.e(tag, "Bluetooth is disabled. Cannot start BLE advertising or scanning.")
-                showErrorToast("Bluetooth desactivado. Por favor, actívalo para usar búsqueda BLE.")
+                showToast("Bluetooth desactivado. Por favor, actívalo para usar búsqueda BLE.")
                 return
             }
             if (advertiser == null) advertiser = bluetoothAdapter?.bluetoothLeAdvertiser
@@ -244,13 +324,12 @@ class BackgroundDiscoveryService : Service() {
 
             if (advertiser == null || scanner == null) {
                 Log.e(tag, "BLE is not supported on this device.")
-                showErrorToast("BLE no es soportado o no está listo en este dispositivo.")
+                showToast("BLE no es soportado o no está listo en este dispositivo.")
                 return
             }
 
             stopAdvertisingAndScanningSilently()
 
-            // 1. Start BLE Advertising
             val advMode = if (currentBeaconState == BeaconState.SENDING) {
                 AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY
             } else {
@@ -276,8 +355,6 @@ class BackgroundDiscoveryService : Service() {
             advertiser?.startAdvertising(advSettings, advData, advertiseCallback)
             Log.d(tag, "Started BLE Advertising in state $currentBeaconState with payload size: ${payload.size} bytes")
 
-            // 2. Start BLE Scanning
-            // Match any payload from our manufacturer ID using setManufacturerData with non-null masks
             val scanFilter = ScanFilter.Builder()
                 .setManufacturerData(MANUFACTURER_ID, byteArrayOf(0), byteArrayOf(0))
                 .build()
@@ -297,14 +374,7 @@ class BackgroundDiscoveryService : Service() {
 
         } catch (e: Exception) {
             Log.e(tag, "Failed to start advertising or scanning", e)
-            showErrorToast("Fallo al iniciar búsqueda BLE: ${e.localizedMessage}")
-        }
-    }
-
-    private fun showErrorToast(msg: String) {
-        val handler = android.os.Handler(android.os.Looper.getMainLooper())
-        handler.post {
-            android.widget.Toast.makeText(applicationContext, msg, android.widget.Toast.LENGTH_LONG).show()
+            showToast("Fallo al iniciar búsqueda BLE: ${e.localizedMessage}")
         }
     }
 
@@ -331,6 +401,11 @@ class BackgroundDiscoveryService : Service() {
         super.onDestroy()
         audioBeaconListener?.stop()
         stopAdvertisingAndScanning()
+        try {
+            unregisterReceiver(serviceReceiver)
+        } catch (e: Exception) {}
+        wifiP2pHelper.unregister()
+        fileTransferManager.stopServer()
         Log.d(tag, "Service onDestroy")
     }
 
@@ -375,7 +450,6 @@ class BackgroundDiscoveryService : Service() {
     private fun handleDiscoveredPeer(peer: BlePeer) {
         val now = System.currentTimeMillis()
 
-        // Ignore our own advertisement if reflected
         if (peer.sessionToken == currentSessionToken && currentSessionToken != "000000000000") {
             return
         }
@@ -387,11 +461,9 @@ class BackgroundDiscoveryService : Service() {
         recentlyDetectedPeerAvatars[peer.sessionToken] = peer.avatarIndex
         Log.d(tag, "Discovered BLE peer: name=${peer.userName}, token=${peer.sessionToken}, state=${peer.state}, avatarIndex=${peer.avatarIndex}")
 
-        if (peer.state == 1) { // Peer is SENDING
-            // Record active sending peer
+        if (peer.state == 1) {
             activeSendingPeers[peer.sessionToken] = now
 
-            // Clean up stale sending peers (older than 15 seconds)
             val iterator = activeSendingPeers.entries.iterator()
             while (iterator.hasNext()) {
                 val entry = iterator.next()
@@ -401,14 +473,12 @@ class BackgroundDiscoveryService : Service() {
             }
 
             if (activeSendingPeers.size >= 2) {
-                // TAREA B: Ambiguity guard. Stop any active audio beacon listener and don't start new ones.
-                Log.d(tag, "AMBIGUITY GUARD: Multiple active sending peers detected (${activeSendingPeers.keys}). Stopping AudioBeaconListener.")
+                Log.d(tag, "AMBIGUITY GUARD: Multiple active sending peers detected. Stopping AudioBeaconListener.")
                 audioBeaconListener?.stop()
 
                 val lastNotified = recentlyNotifiedPeers[peer.sessionToken] ?: 0L
                 if (now - lastNotified > 10_000) {
                     recentlyNotifiedPeers[peer.sessionToken] = now
-                    // Broadcast ACTION_PEER_SENDING with ambiguity flag to show the choice list in MainActivity
                     val intent = Intent(ACTION_PEER_SENDING).apply {
                         setPackage(packageName)
                         putExtra(EXTRA_PEER_NAME, peer.userName)
@@ -419,22 +489,19 @@ class BackgroundDiscoveryService : Service() {
                     sendBroadcast(intent)
                 }
             } else {
-                // Exactly one active sending peer. Normal flow.
                 val lastNotified = recentlyNotifiedPeers[peer.sessionToken] ?: 0L
-                if (now - lastNotified > 10_000) { // Throttle duplicate notifications (10 seconds)
+                if (now - lastNotified > 10_000) {
                     recentlyNotifiedPeers[peer.sessionToken] = now
                     Log.d(tag, "PEER SENDING DETECTED: ${peer.userName} (${peer.sessionToken})")
 
-                    // Start listening to the beacon (FIX 4)
                     if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
                         Log.d(tag, "RECORD_AUDIO permission granted. Starting AudioBeaconListener for token: ${peer.sessionToken}")
                         audioBeaconListener?.start(peer.sessionToken)
                     } else {
                         Log.e(tag, "RECORD_AUDIO permission not granted. Cannot start AudioBeaconListener.")
-                        showErrorToast("Permiso de micrófono no otorgado. No se puede escuchar la baliza.")
+                        showToast("Permiso de micrófono no otorgado. No se puede escuchar la baliza.")
                     }
 
-                    // Broadcast the PEER_SENDING to MainActivity (using explicit intent)
                     val intent = Intent(ACTION_PEER_SENDING).apply {
                         setPackage(packageName)
                         putExtra(EXTRA_PEER_NAME, peer.userName)
@@ -444,7 +511,6 @@ class BackgroundDiscoveryService : Service() {
                     }
                     sendBroadcast(intent)
 
-                    // Show a notification
                     showMatchNotification(peer)
                 }
             }
@@ -477,12 +543,84 @@ class BackgroundDiscoveryService : Service() {
         manager.notify(MATCH_NOTIFICATION_ID, notification)
     }
 
+    private fun showConnectionNotification(userName: String, token: String) {
+        val acceptIntent = Intent("com.example.conexion.ACTION_NOTIFICATION_ACCEPT").apply {
+            putExtra(EXTRA_PEER_TOKEN, token)
+            setPackage(packageName)
+        }
+        val acceptPendingIntent = PendingIntent.getBroadcast(
+            this, 101, acceptIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val rejectIntent = Intent("com.example.conexion.ACTION_NOTIFICATION_REJECT").apply {
+            putExtra(EXTRA_PEER_TOKEN, token)
+            setPackage(packageName)
+        }
+        val rejectPendingIntent = PendingIntent.getBroadcast(
+            this, 102, rejectIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val mainIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            putExtra(EXTRA_PEER_NAME, userName)
+            putExtra(EXTRA_PEER_TOKEN, token)
+        }
+        val mainPendingIntent = PendingIntent.getActivity(
+            this, 103, mainIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("¡Tono ultrasónico detectado!")
+            .setContentText("¿Quieres conectarte con $userName?")
+            .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .setFullScreenIntent(mainPendingIntent, true)
+            .setContentIntent(mainPendingIntent)
+            .addAction(android.R.drawable.ic_menu_add, "ACEPTAR", acceptPendingIntent)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "RECHAZAR", rejectPendingIntent)
+            .setAutoCancel(true)
+            .build()
+
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.notify(MATCH_NOTIFICATION_ID, notification)
+    }
+
+    private fun showFileProgressNotification(fileName: String, bytes: Long, total: Long, completed: Boolean) {
+        val progressText = if (completed) {
+            "Archivo recibido con éxito: $fileName"
+        } else {
+            val pct = if (total > 0) (bytes * 100 / total).toInt() else 0
+            "Recibiendo $fileName: $pct%"
+        }
+
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("Transferencia de archivos")
+            .setContentText(progressText)
+            .setSmallIcon(android.R.drawable.stat_sys_download_done)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setOngoing(!completed)
+            .build()
+
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.notify(1005, notification)
+    }
+
+    private fun showToast(msg: String) {
+        val handler = android.os.Handler(android.os.Looper.getMainLooper())
+        handler.post {
+            android.widget.Toast.makeText(applicationContext, msg, android.widget.Toast.LENGTH_LONG).show()
+        }
+    }
+
     private fun buildManufacturerData(state: Int, sessionToken: String, avatarIndex: Int, userName: String): ByteArray {
         val stream = ByteArrayOutputStream()
         val dos = DataOutputStream(stream)
-        dos.writeByte(state) // 1 byte state (0 = IDLE, 1 = SENDING)
+        dos.writeByte(state)
 
-        // Write Session Token (6 bytes hex represented by 12 chars string, convert to 6 bytes payload)
         val tokenBytes = ByteArray(6)
         try {
             for (i in 0 until 6) {
@@ -492,11 +630,10 @@ class BackgroundDiscoveryService : Service() {
         } catch (e: Exception) {
             Log.e(tag, "Failed to parse session token to bytes", e)
         }
-        dos.write(tokenBytes) // 6 bytes
+        dos.write(tokenBytes)
 
-        dos.writeByte(avatarIndex) // 1 byte avatar index
+        dos.writeByte(avatarIndex)
 
-        // Write truncated User Name
         val nameBytes = userName.toByteArray(Charsets.UTF_8)
         val nameLength = nameBytes.size.coerceAtMost(10)
         dos.write(nameBytes, 0, nameLength)
@@ -505,7 +642,7 @@ class BackgroundDiscoveryService : Service() {
     }
 
     private fun parseManufacturerData(data: ByteArray): BlePeer? {
-        if (data.size < 8) return null // 1 byte state + 6 bytes token + 1 byte avatar = 8 bytes minimum check
+        if (data.size < 8) return null
         return try {
             val buffer = ByteBuffer.wrap(data)
             val state = buffer.get().toInt()

@@ -64,6 +64,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var wifiP2pHelper: WifiP2pHelper
     private lateinit var fileTransferManager: FileTransferManager
     private lateinit var sessionManager: SessionManager
+    private lateinit var dbHelper: DatabaseHelper
 
     private var audioBeaconEmitter: AudioBeaconEmitter? = null
 
@@ -159,10 +160,22 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val prefs = getSharedPreferences("conexion_prefs", Context.MODE_PRIVATE)
-        myNameState.value = prefs.getString("user_name", "Mi Dispositivo") ?: "Mi Dispositivo"
-        myAvatarState.value = prefs.getInt("avatar_index", 0)
-        myPhoneState.value = prefs.getString("phone_number", "") ?: ""
+        dbHelper = DatabaseHelper(this)
+        val savedProf = dbHelper.getProfile()
+        if (savedProf != null) {
+            myNameState.value = savedProf.first
+            myPhoneState.value = savedProf.second
+            myAvatarState.value = savedProf.third
+        } else {
+            val prefs = getSharedPreferences("conexion_prefs", Context.MODE_PRIVATE)
+            val defaultName = prefs.getString("user_name", "Mi Dispositivo") ?: "Mi Dispositivo"
+            val defaultAvatar = prefs.getInt("avatar_index", 0)
+            val defaultPhone = prefs.getString("phone_number", "") ?: ""
+            dbHelper.saveProfile(defaultName, defaultPhone, defaultAvatar)
+            myNameState.value = defaultName
+            myAvatarState.value = defaultAvatar
+            myPhoneState.value = defaultPhone
+        }
 
         sessionManager = SessionManager(
             onMessageReceived = { text ->
@@ -268,6 +281,15 @@ class MainActivity : ComponentActivity() {
             },
             onPeersDiscovered = { peers ->
                 peersState.value = peers
+                // Persist peer info to DB
+                peers.forEach { peer ->
+                    dbHelper.saveOrUpdatePeer(
+                        peer.userName,
+                        peer.sessionToken,
+                        peer.phoneNumber,
+                        peer.avatarIndex
+                    )
+                }
             },
             onConnectionRequestReceived = { peer ->
                 connectionPromptPeer.value = peer
@@ -1196,6 +1218,57 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            val recentPeers = remember(peersState.value) { dbHelper.getRecentPeers() }
+            if (recentPeers.isNotEmpty()) {
+                Text(
+                    text = "Dispositivos Cercanos Recientes (Historial)",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                    textAlign = TextAlign.Start
+                )
+
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 16.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        recentPeers.forEach { dbPeer ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                AvatarBubble(avatarIndex = dbPeer.avatar, size = 32.dp)
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = dbPeer.name,
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontSize = 14.sp
+                                    )
+                                    if (dbPeer.phone.isNotEmpty()) {
+                                        Text(
+                                            text = "Tel: ${dbPeer.phone}",
+                                            fontSize = 11.sp,
+                                            color = Color.Gray
+                                        )
+                                    }
+                                }
+                                Text(
+                                    text = "Guardado en BD",
+                                    fontSize = 10.sp,
+                                    color = Color.Gray
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
@@ -1218,6 +1291,7 @@ class MainActivity : ComponentActivity() {
                                 .edit()
                                 .putString("user_name", it)
                                 .apply()
+                            dbHelper.saveProfile(it, myPhoneState.value, myAvatarState.value)
                         },
                         label = { Text("Nombre para mostrar") },
                         singleLine = true,
@@ -1236,6 +1310,7 @@ class MainActivity : ComponentActivity() {
                                 .edit()
                                 .putString("phone_number", it)
                                 .apply()
+                            dbHelper.saveProfile(myNameState.value, it, myAvatarState.value)
                         },
                         label = { Text("Número de teléfono") },
                         singleLine = true,
@@ -1282,6 +1357,7 @@ class MainActivity : ComponentActivity() {
                                             .edit()
                                             .putInt("avatar_index", idx)
                                             .apply()
+                                        dbHelper.saveProfile(myNameState.value, myPhoneState.value, idx)
                                     },
                                 contentAlignment = Alignment.Center
                             ) {

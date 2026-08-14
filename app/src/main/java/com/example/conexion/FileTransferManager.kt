@@ -147,11 +147,29 @@ class FileTransferManager(
      */
     suspend fun sendFile(hostAddress: String, fileUri: Uri): Boolean = withContext(Dispatchers.IO) {
         var socket: Socket? = null
-        try {
-            Log.d(tag, "Attempting to send file to $hostAddress:$port")
-            socket = Socket(hostAddress, port)
+        var attempts = 0
+        val maxAttempts = 5
+        var connected = false
 
-            val outputStream = socket.getOutputStream()
+        while (attempts < maxAttempts && !connected) {
+            try {
+                attempts++
+                Log.d(tag, "Attempt $attempts: Connecting to $hostAddress:$port")
+                socket = Socket(hostAddress, port)
+                connected = true
+            } catch (e: Exception) {
+                Log.e(tag, "Socket connection attempt $attempts failed: ${e.message}")
+                if (attempts < maxAttempts) {
+                    kotlinx.coroutines.delay(1000)
+                } else {
+                    onError("No se pudo establecer conexión de red con el destinatario después de $maxAttempts intentos.")
+                    return@withContext false
+                }
+            }
+        }
+
+        try {
+            val outputStream = socket!!.getOutputStream()
             val dataOutputStream = DataOutputStream(outputStream)
 
             // Resolve file name and size from Uri
