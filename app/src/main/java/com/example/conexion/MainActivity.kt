@@ -1,16 +1,18 @@
 package com.example.conexion
 
 import android.Manifest
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.net.wifi.p2p.WifiP2pInfo
-import android.content.BroadcastReceiver
-import android.content.Intent
-import android.content.IntentFilter
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -18,10 +20,15 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -30,16 +37,14 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import coil.compose.AsyncImage
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.graphics.Color
-import androidx.compose.animation.core.*
-import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.layout.Box
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -48,15 +53,17 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import coil.compose.AsyncImage
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.qrcode.QRCodeWriter
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.Dispatchers
-import java.net.NetworkInterface
-import java.util.Collections
 import java.io.File
-import android.os.Environment
+import java.net.NetworkInterface
+import java.text.SimpleDateFormat
+import java.util.*
 
 class MainActivity : ComponentActivity() {
 
@@ -92,6 +99,7 @@ class MainActivity : ComponentActivity() {
 
     // App state observables
     private var isWifiEnabledState = mutableStateOf(false)
+    private var myDeviceIdState = mutableStateOf("")
     private var myNameState = mutableStateOf("Mi Dispositivo")
     private var myAvatarState = mutableStateOf(0)
     private var myPhoneState = mutableStateOf("")
@@ -105,21 +113,20 @@ class MainActivity : ComponentActivity() {
     private var isTransferring = mutableStateOf(false)
     private var isTransferCompleted = mutableStateOf(false)
 
-    // Chat and Contact Share UI state
-    private var isChatActive = mutableStateOf(false)
-    private var chatMessages = mutableStateListOf<ChatMessage>()
+    // Chat UI state
+    private var chatMessages = mutableStateListOf<DbChatMessage>()
     private var chatRequestPrompt = mutableStateOf<ChatPrompt?>(null)
     private var contactRequestPrompt = mutableStateOf<ContactPrompt?>(null)
+    private var activeChatPeerDeviceId = mutableStateOf("")
     private var activeChatPeerName = mutableStateOf("")
 
-    data class ChatMessage(val text: String, val isMe: Boolean)
-    data class ChatPrompt(val peerName: String, val onDecision: (Boolean) -> Unit)
-    data class ContactPrompt(val peerName: String, val onDecision: (Boolean) -> Unit)
+    data class ChatPrompt(val peerDeviceId: String, val peerName: String, val onDecision: (Boolean) -> Unit)
+    data class ContactPrompt(val peerDeviceId: String, val peerName: String, val onDecision: (Boolean) -> Unit)
 
     // BLE background service state
     private var isBgDiscoveryEnabled = mutableStateOf(false)
 
-    // TAREA B & E: Candidates discovered from background BLE scan
+    // Candidates discovered from background BLE scan
     private val sendingCandidates = mutableStateMapOf<String, BackgroundDiscoveryService.BlePeer>()
     private val blePeersMap = mutableStateMapOf<String, BackgroundDiscoveryService.BlePeer>()
     private var showSingleCandidateManual = mutableStateOf<String?>(null)
@@ -130,8 +137,11 @@ class MainActivity : ComponentActivity() {
     // Incoming file dialog state
     private var incomingFileRequest = mutableStateOf<IncomingFilePrompt?>(null)
 
-    // Pending Uris from Share Sheet (TAREA 2)
+    // Pending Uris from Share Sheet
     private var pendingShareUris = mutableStateOf<List<Uri>>(emptyList())
+
+    // App Theme State (Feature 2)
+    private var currentThemeIndex = mutableStateOf(0)
 
     data class IncomingFilePrompt(
         val fileName: String,
@@ -147,13 +157,12 @@ class MainActivity : ComponentActivity() {
                 val token = intent.getStringExtra(BackgroundDiscoveryService.EXTRA_PEER_TOKEN) ?: "000000000000"
                 val avatarIdx = intent.getIntExtra("EXTRA_PEER_AVATAR", 0)
                 val isAmbiguous = intent.getBooleanExtra("EXTRA_IS_AMBIGUOUS", false)
-                Log.d(tag, "Received BLE peer sending from background service: $name, token=$token, isAmbiguous=$isAmbiguous, avatarIndex=$avatarIdx")
+                Log.d(tag, "Received BLE peer sending: $name, token=$token, isAmbiguous=$isAmbiguous, avatarIndex=$avatarIdx")
 
                 val peer = BackgroundDiscoveryService.BlePeer(name, token, 1, avatarIdx)
                 sendingCandidates[token] = peer
                 blePeersMap[token] = peer
 
-                // Auto-expiration after 15 seconds to keep candidates list clean
                 lifecycleScope.launch {
                     delay(15_000)
                     if (sendingCandidates[token] == peer) {
@@ -166,6 +175,7 @@ class MainActivity : ComponentActivity() {
                 val success = intent.getBooleanExtra("EXTRA_DECODE_SUCCESS", false)
                 Log.d(tag, "Received Beacon decoded broadcast: token=$token, name=$name, success=$success")
                 if (success) {
+                    HapticManager.performIPhoneHaptic(this@MainActivity)
                     Toast.makeText(this@MainActivity, "¡Tono ultrasónico válido detectado!", Toast.LENGTH_LONG).show()
                     val peer = wifiP2pHelper.findPeerByToken(token)
                     if (peer != null) {
@@ -183,6 +193,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         dbHelper = DatabaseHelper(this)
+        myDeviceIdState.value = dbHelper.getOrCreateMyDeviceId(this)
+
         val savedProf = dbHelper.getProfile()
         if (savedProf != null) {
             myNameState.value = savedProf.first
@@ -193,40 +205,44 @@ class MainActivity : ComponentActivity() {
             val defaultName = prefs.getString("user_name", "Mi Dispositivo") ?: "Mi Dispositivo"
             val defaultAvatar = prefs.getInt("avatar_index", 0)
             val defaultPhone = prefs.getString("phone_number", "") ?: ""
-            dbHelper.saveProfile(defaultName, defaultPhone, defaultAvatar)
+            dbHelper.saveProfile(defaultName, defaultPhone, defaultAvatar, myDeviceIdState.value)
             myNameState.value = defaultName
             myAvatarState.value = defaultAvatar
             myPhoneState.value = defaultPhone
         }
 
         sessionManager = SessionManager(
-            onMessageReceived = { text ->
-                chatMessages.add(ChatMessage(text, false))
+            dbHelper = dbHelper,
+            myDeviceId = myDeviceIdState.value,
+            onMessageReceived = { chatMsg ->
+                if (chatMsg.peerDeviceId == activeChatPeerDeviceId.value) {
+                    chatMessages.add(chatMsg)
+                }
+                HapticManager.performLightClick(this)
             },
-            onChatRequestReceived = { peerName, decisionCallback ->
-                chatRequestPrompt.value = ChatPrompt(peerName) { accepted ->
+            onChatRequestReceived = { peerDeviceId, peerName, decisionCallback ->
+                chatRequestPrompt.value = ChatPrompt(peerDeviceId, peerName) { accepted ->
                     if (accepted) {
-                        isChatActive.value = true
+                        activeChatPeerDeviceId.value = peerDeviceId
                         activeChatPeerName.value = peerName
-                        chatMessages.clear()
+                        loadChatMessagesForPeer(peerDeviceId)
                     }
                     decisionCallback(accepted)
                 }
             },
-            onChatRequestResponse = { accepted ->
+            onChatRequestResponse = { accepted, peerDeviceId ->
                 if (accepted) {
-                    isChatActive.value = true
-                    chatMessages.clear()
+                    activeChatPeerDeviceId.value = peerDeviceId
+                    loadChatMessagesForPeer(peerDeviceId)
                     Toast.makeText(this, "¡Solicitud de chat aceptada!", Toast.LENGTH_SHORT).show()
                 } else {
                     Toast.makeText(this, "El usuario rechazó la solicitud de chat.", Toast.LENGTH_LONG).show()
                 }
             },
-            onContactRequestReceived = { peerName, decisionCallback ->
-                contactRequestPrompt.value = ContactPrompt(peerName) { accepted ->
+            onContactRequestReceived = { peerDeviceId, peerName, decisionCallback ->
+                contactRequestPrompt.value = ContactPrompt(peerDeviceId, peerName) { accepted ->
                     decisionCallback(accepted)
                     if (accepted) {
-                        // Send my own data to peer immediately
                         sessionManager.sendContactData(myNameState.value, myPhoneState.value)
                         Toast.makeText(this, "Compartiendo contacto...", Toast.LENGTH_SHORT).show()
                     }
@@ -234,7 +250,6 @@ class MainActivity : ComponentActivity() {
             },
             onContactRequestResponse = { accepted ->
                 if (accepted) {
-                    // Send my own data to peer
                     sessionManager.sendContactData(myNameState.value, myPhoneState.value)
                     Toast.makeText(this, "Solicitud aceptada. Compartiendo contacto...", Toast.LENGTH_SHORT).show()
                 } else {
@@ -242,7 +257,6 @@ class MainActivity : ComponentActivity() {
                 }
             },
             onContactDataReceived = { name, phone ->
-                // Guard contact into the Address Book
                 saveContactToAddressBook(name, phone)
             },
             onError = { err ->
@@ -253,6 +267,32 @@ class MainActivity : ComponentActivity() {
         )
 
         remoteAudioPlayer = RemoteAudioPlayer(this)
+
+        fileTransferManager = FileTransferManager(
+            context = this,
+            dbHelper = dbHelper,
+            onIncomingFileRequest = { fileName, fileSize, onAccept, onReject ->
+                incomingFileRequest.value = IncomingFilePrompt(fileName, fileSize, onAccept, onReject)
+            },
+            onError = { errorMsg ->
+                runOnUiThread {
+                    Toast.makeText(this, errorMsg, Toast.LENGTH_LONG).show()
+                }
+            },
+            onProgress = { fileName, bytes, total, completed ->
+                transferFileName.value = fileName
+                isTransferring.value = !completed
+                isTransferCompleted.value = completed
+                transferProgress.value = if (total > 0) bytes.toFloat() / total else 0f
+                if (completed) {
+                    HapticManager.performIPhoneHaptic(this)
+                    runOnUiThread {
+                        Toast.makeText(this, "Transferencia finalizada: $fileName", Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+        )
+
         fileTransferManager.onAudioPlayRequested = { uri, fileName ->
             remoteAudioPlayer.play(uri, fileName)
             Toast.makeText(this, "Reproduciendo audio remoto: $fileName", Toast.LENGTH_LONG).show()
@@ -273,12 +313,9 @@ class MainActivity : ComponentActivity() {
             onConnectionChanged = { info ->
                 currentConnectionInfo.value = info
                 if (info != null && info.groupFormed) {
-                    // Both Group Owner and Client will run the server so either can accept files.
-                    // This resolves GO/Client bidirectional communication constraints.
                     lifecycleScope.launch {
                         fileTransferManager.startServer()
                     }
-                    // Start SessionManager servers & clients
                     if (info.isGroupOwner) {
                         sessionManager.startServer()
                     } else {
@@ -302,30 +339,27 @@ class MainActivity : ComponentActivity() {
                                     attempts++
                                     Log.d(tag, "Attempt $attempts: Sending automatic file: $uri to $hostAddress")
                                     sent = fileTransferManager.sendFile(hostAddress, uri, isAutoPlayAudioEnabled.value)
-                                    if (!sent) {
-                                        delay(1500)
-                                    }
+                                    if (!sent) delay(1500)
                                 }
                             }
                             pendingShareUris.value = emptyList()
                         }
                     }
+                    HapticManager.performIPhoneHaptic(this)
                     Toast.makeText(this, "¡Conectado exitosamente!", Toast.LENGTH_SHORT).show()
                 } else {
                     fileTransferManager.stopServer()
                     sessionManager.stop()
-                    isChatActive.value = false
                 }
             },
             onPeersDiscovered = { peers ->
                 peersState.value = peers
-                // Persist peer info to DB
                 peers.forEach { peer ->
                     dbHelper.saveOrUpdatePeer(
-                        peer.userName,
-                        peer.sessionToken,
-                        peer.phoneNumber,
-                        peer.avatarIndex
+                        name = peer.userName,
+                        token = peer.sessionToken,
+                        phone = peer.phoneNumber,
+                        avatar = peer.avatarIndex
                     )
                 }
             },
@@ -341,32 +375,8 @@ class MainActivity : ComponentActivity() {
 
         audioBeaconEmitter = AudioBeaconEmitter()
 
-        fileTransferManager = FileTransferManager(
-            context = this,
-            onIncomingFileRequest = { fileName, fileSize, onAccept, onReject ->
-                incomingFileRequest.value = IncomingFilePrompt(fileName, fileSize, onAccept, onReject)
-            },
-            onError = { errorMsg ->
-                runOnUiThread {
-                    Toast.makeText(this, errorMsg, Toast.LENGTH_LONG).show()
-                }
-            },
-            onProgress = { fileName, bytes, total, completed ->
-                transferFileName.value = fileName
-                isTransferring.value = !completed
-                isTransferCompleted.value = completed
-                transferProgress.value = if (total > 0) bytes.toFloat() / total else 0f
-                if (completed) {
-                    runOnUiThread {
-                        Toast.makeText(this, "Transferencia finalizada: $fileName", Toast.LENGTH_LONG).show()
-                    }
-                }
-            }
-        )
-
         toggleWifi(true)
 
-        // Register local broadcast receiver for peer sending and beacon decoding events
         val bgFilter = IntentFilter().apply {
             addAction(BackgroundDiscoveryService.ACTION_PEER_SENDING)
             addAction(BackgroundDiscoveryService.ACTION_BEACON_TOKEN_DECODED)
@@ -377,12 +387,11 @@ class MainActivity : ComponentActivity() {
             registerReceiver(bgServiceReceiver, bgFilter)
         }
 
-        // Handle possible launch intent from a match notification
         handleIntent(intent)
         handleShareIntent(intent)
 
         setContent {
-            MaterialTheme {
+            AppTheme(themeIndex = currentThemeIndex.value) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
@@ -393,6 +402,12 @@ class MainActivity : ComponentActivity() {
         }
 
         requestAllPermissions()
+    }
+
+    private fun loadChatMessagesForPeer(peerDeviceId: String) {
+        val msgs = dbHelper.getChatMessages(peerDeviceId)
+        chatMessages.clear()
+        chatMessages.addAll(msgs)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -436,12 +451,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        // Sync WiFi state
         val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
         wifiManager?.let {
             isWifiEnabledState.value = it.isWifiEnabled
         }
-        // Synchronize with background service status if running
         val prefs = getSharedPreferences("conexion_prefs", Context.MODE_PRIVATE)
         isBgDiscoveryEnabled.value = prefs.getBoolean("bg_discovery_enabled", false)
         if (isBgDiscoveryEnabled.value) {
@@ -450,16 +463,14 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onPause() {
-        super.onPause() // FIX 1: Corrected lifecycle call from super.onResume() to super.onPause()
+        super.onPause()
     }
 
     override fun onDestroy() {
         super.onDestroy()
         try {
             unregisterReceiver(bgServiceReceiver)
-        } catch (e: Exception) {
-            // ignore
-        }
+        } catch (e: Exception) {}
         wifiP2pHelper.unregister()
         fileTransferManager.stopServer()
         airShareServer?.stop()
@@ -507,24 +518,6 @@ class MainActivity : ComponentActivity() {
         } catch (ex: Exception) {
             Log.e(tag, "Error getting NetworkInterface IP", ex)
         }
-
-        try {
-            val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-            val ipAddress = wifiManager?.connectionInfo?.ipAddress ?: 0
-            if (ipAddress != 0) {
-                return String.format(
-                    java.util.Locale.US,
-                    "%d.%d.%d.%d",
-                    ipAddress and 0xff,
-                    ipAddress shr 8 and 0xff,
-                    ipAddress shr 16 and 0xff,
-                    ipAddress shr 24 and 0xff
-                )
-            }
-        } catch (e: Exception) {
-            Log.e(tag, "Error getting WifiManager IP", e)
-        }
-
         return "127.0.0.1"
     }
 
@@ -547,13 +540,7 @@ class MainActivity : ComponentActivity() {
                 onMessageReceived = { message ->
                     lifecycleScope.launch(Dispatchers.Main) {
                         Toast.makeText(this@MainActivity, "AirShare Message: $message", Toast.LENGTH_SHORT).show()
-                        val vibrator = getSystemService(Context.VIBRATOR_SERVICE) as? android.os.Vibrator
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                            vibrator?.vibrate(android.os.VibrationEffect.createOneShot(100, android.os.VibrationEffect.DEFAULT_AMPLITUDE))
-                        } else {
-                            @Suppress("DEPRECATION")
-                            vibrator?.vibrate(100)
-                        }
+                        HapticManager.performIPhoneHaptic(this@MainActivity)
                     }
                 },
                 onContactReceived = { name, phone ->
@@ -593,7 +580,7 @@ class MainActivity : ComponentActivity() {
         }
 
         val notification = androidx.core.app.NotificationCompat.Builder(this, channelId)
-            .setContentTitle("Archivo recibido desde iPhone")
+            .setContentTitle("Archivo recibido")
             .setContentText(fileName)
             .setSmallIcon(android.R.drawable.stat_sys_download_done)
             .setPriority(androidx.core.app.NotificationCompat.PRIORITY_DEFAULT)
@@ -620,11 +607,8 @@ class MainActivity : ComponentActivity() {
 
     private fun generateSessionToken(): String {
         val allowedChars = ('0'..'9') + ('A'..'F')
-        return (1..12)
-            .map { allowedChars.random() }
-            .joinToString("")
+        return (1..12).map { allowedChars.random() }.joinToString("")
     }
-
 
     private fun startBgDiscoveryService() {
         val serviceIntent = Intent(this, BackgroundDiscoveryService::class.java).apply {
@@ -650,7 +634,6 @@ class MainActivity : ComponentActivity() {
         stopService(serviceIntent)
     }
 
-    // Placeholder function to save contacts
     private fun saveContactToAddressBook(name: String, phone: String) {
         if (phone.isEmpty()) {
             Toast.makeText(this, "El teléfono de $name está vacío, no se guardó.", Toast.LENGTH_SHORT).show()
@@ -679,10 +662,11 @@ class MainActivity : ComponentActivity() {
                 .build())
 
             contentResolver.applyBatch(android.provider.ContactsContract.AUTHORITY, ops)
+            HapticManager.performIPhoneHaptic(this)
             Toast.makeText(this, "¡Contacto $name guardado exitosamente!", Toast.LENGTH_LONG).show()
         } catch (e: Exception) {
             Log.e(tag, "Failed to save contact", e)
-            Toast.makeText(this, "Fallo al guardar el contacto en el sistema: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Fallo al guardar el contacto: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -759,86 +743,24 @@ class MainActivity : ComponentActivity() {
         return size
     }
 
-    @Composable
-    fun FilePreviewItem(uri: Uri) {
-        val context = LocalContext.current
-        val fileName = remember(uri) { getFileNameFromUri(context, uri) }
-        val mimeType = remember(uri) { context.contentResolver.getType(uri) }
-
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 4.dp)
-                .background(Color.White.copy(alpha = 0.15f), RoundedCornerShape(8.dp))
-                .padding(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            if (mimeType?.startsWith("image/") == true) {
-                AsyncImage(
-                    model = uri,
-                    contentDescription = "Miniatura",
-                    modifier = Modifier
-                        .size(64.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .border(1.dp, Color.LightGray, RoundedCornerShape(8.dp))
-                )
-            } else if (mimeType?.startsWith("video/") == true) {
-                Box(
-                    modifier = Modifier
-                        .size(64.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(Color.Black.copy(alpha = 0.2f))
-                        .border(1.dp, Color.LightGray, RoundedCornerShape(8.dp)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text("▶", fontSize = 24.sp, color = Color.White)
-                }
-            } else {
-                Box(
-                    modifier = Modifier
-                        .size(64.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(Color.LightGray.copy(alpha = 0.5f))
-                        .border(1.dp, Color.LightGray, RoundedCornerShape(8.dp)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    val ext = fileName.substringAfterLast('.', "").uppercase().take(4)
-                    Text(
-                        text = ext.ifEmpty { "DOC" },
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color.DarkGray
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.width(12.dp))
-
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = fileName,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 14.sp,
-                    maxLines = 2,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer
-                )
-                val size = remember(uri) {
-                    val bytes = getFileSizeFromUri(context, uri)
-                    if (bytes > 0) String.format("%.2f MB", bytes.toDouble() / (1024 * 1024)) else "Tamaño desconocido"
-                }
-                Text(
-                    text = size,
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
-                )
-            }
-        }
-    }
-
-    // A list of lovely gradient profiles for users
-    data class AvatarDesign(val emoji: String, val bgGradients: List<Color>, val contentColor: Color)
+    // --- App Themes (Feature 2) ---
+    data class ThemePreset(
+        val name: String,
+        val primary: Color,
+        val secondary: Color,
+        val background: Color,
+        val surface: Color,
+        val gradient: List<Color>
+    )
 
     companion object {
+        val THEME_PRESETS = listOf(
+            ThemePreset("Purple Aurora", Color(0xFF8B5CF6), Color(0xFFEC4899), Color(0xFF0F172A), Color(0xFF1E293B), listOf(Color(0xFF8B5CF6), Color(0xFFEC4899))),
+            ThemePreset("Midnight Glass", Color(0xFF3B82F6), Color(0xFF06B6D4), Color(0xFF020617), Color(0xFF0F172A), listOf(Color(0xFF3B82F6), Color(0xFF06B6D4))),
+            ThemePreset("Emerald Glow", Color(0xFF10B981), Color(0xFF059669), Color(0xFF064E3B), Color(0xFF047857), listOf(Color(0xFF10B981), Color(0xFF34D399))),
+            ThemePreset("Cyber Neon", Color(0xFFF43F5E), Color(0xFF8B5CF6), Color(0xFF18181B), Color(0xFF27272A), listOf(Color(0xFFF43F5E), Color(0xFFA855F7)))
+        )
+
         val AVATAR_DESIGNS = listOf(
             AvatarDesign("🦁", listOf(Color(0xFFFF9800), Color(0xFFFF5722)), Color.White),
             AvatarDesign("🦄", listOf(Color(0xFFE91E63), Color(0xFF9C27B0)), Color.White),
@@ -849,6 +771,21 @@ class MainActivity : ComponentActivity() {
             AvatarDesign("🦖", listOf(Color(0xFF4CAF50), Color(0xFF8BC34A)), Color.White),
             AvatarDesign("🦉", listOf(Color(0xFF795548), Color(0xFFA1887F)), Color.White)
         )
+    }
+
+    data class AvatarDesign(val emoji: String, val bgGradients: List<Color>, val contentColor: Color)
+
+    @Composable
+    fun AppTheme(themeIndex: Int, content: @Composable () -> Unit) {
+        val preset = THEME_PRESETS.getOrElse(themeIndex) { THEME_PRESETS[0] }
+        val colorScheme = darkColorScheme(
+            primary = preset.primary,
+            secondary = preset.secondary,
+            background = preset.background,
+            surface = preset.surface,
+            surfaceVariant = preset.surface.copy(alpha = 0.8f)
+        )
+        MaterialTheme(colorScheme = colorScheme, content = content)
     }
 
     @Composable
@@ -862,10 +799,8 @@ class MainActivity : ComponentActivity() {
             modifier = modifier
                 .size(size)
                 .clip(CircleShape)
-                .background(
-                    androidx.compose.ui.graphics.Brush.linearGradient(design.bgGradients)
-                )
-                .border(2.dp, Color.White, CircleShape),
+                .background(Brush.linearGradient(design.bgGradients))
+                .border(2.dp, Color.White.copy(alpha = 0.8f), CircleShape),
             contentAlignment = Alignment.Center
         ) {
             Text(
@@ -875,7 +810,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // Modern Sonar/Radar Scan Screen Component
+    // Modern Sonar Radar
     @Composable
     fun ModernSonarRadar(
         myAvatarIndex: Int,
@@ -885,9 +820,9 @@ class MainActivity : ComponentActivity() {
         onBlePeerClick: (BackgroundDiscoveryService.BlePeer) -> Unit,
         modifier: Modifier = Modifier
     ) {
+        val context = LocalContext.current
         val infiniteTransition = rememberInfiniteTransition()
 
-        // Ripple radius animations
         val ripple1 = infiniteTransition.animateFloat(
             initialValue = 0f,
             targetValue = 1f,
@@ -905,8 +840,6 @@ class MainActivity : ComponentActivity() {
                 initialStartOffset = StartOffset(2000)
             )
         )
-
-        // Rotation animation for the radar sweep beam
         val sweepAngle = infiniteTransition.animateFloat(
             initialValue = 0f,
             targetValue = 360f,
@@ -921,17 +854,15 @@ class MainActivity : ComponentActivity() {
         Box(
             modifier = modifier
                 .fillMaxWidth()
-                .height(300.dp)
+                .height(280.dp)
                 .background(Color(0xFF0F172A), RoundedCornerShape(24.dp))
                 .clip(RoundedCornerShape(24.dp)),
             contentAlignment = Alignment.Center
         ) {
-            // Sonar Canvas drawing lines and sweep
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val center = Offset(size.width / 2, size.height / 2)
                 val maxRadius = size.width.coerceAtMost(size.height) / 2 * 0.85f
 
-                // Draw solid circles of ripples
                 drawCircle(
                     color = primaryColor.copy(alpha = 0.15f * (1f - ripple1.value)),
                     radius = maxRadius * ripple1.value,
@@ -943,7 +874,6 @@ class MainActivity : ComponentActivity() {
                     center = center
                 )
 
-                // Draw background radar concentric circles
                 for (i in 1..4) {
                     drawCircle(
                         color = primaryColor.copy(alpha = 0.2f),
@@ -953,7 +883,6 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
-                // Draw crosshairs axes
                 drawLine(
                     color = primaryColor.copy(alpha = 0.15f),
                     start = Offset(center.x - maxRadius, center.y),
@@ -967,7 +896,6 @@ class MainActivity : ComponentActivity() {
                     strokeWidth = 1.dp.toPx()
                 )
 
-                // Draw sweep beam line
                 val angleRad = Math.toRadians(sweepAngle.value.toDouble())
                 val endX = center.x + maxRadius * Math.cos(angleRad).toFloat()
                 val endY = center.y + maxRadius * Math.sin(angleRad).toFloat()
@@ -979,7 +907,6 @@ class MainActivity : ComponentActivity() {
                 )
             }
 
-            // Center: ME
             Box(
                 modifier = Modifier
                     .size(54.dp)
@@ -991,19 +918,15 @@ class MainActivity : ComponentActivity() {
                 AvatarBubble(avatarIndex = myAvatarIndex, size = 48.dp)
             }
 
-            // Combine/Deduplicate Peers to represent them as Sonar Nodes
-            // Let's lay them out in circular patterns dynamically!
             val allNodes = remember(peers, blePeers) {
                 val list = mutableListOf<SonarNode>()
                 peers.forEachIndexed { idx, p ->
-                    // Lay them out at specific angles
                     val angle = 45f + idx * 75f
                     val distanceFactor = 0.45f + (idx % 2) * 0.25f
                     list.add(SonarNode.WifiPeer(p, angle, distanceFactor))
                 }
                 var bleCount = 0
                 blePeers.forEach { bp ->
-                    // Only add if not already in peers
                     if (peers.none { it.sessionToken == bp.sessionToken }) {
                         val angle = 110f + bleCount * 85f
                         val distanceFactor = 0.55f + (bleCount % 2) * 0.25f
@@ -1014,10 +937,8 @@ class MainActivity : ComponentActivity() {
                 list
             }
 
-            // Draw peers as overlapping items on the Sonar
             allNodes.forEach { node ->
                 val angleRad = Math.toRadians(node.angle.toDouble())
-                // Max radius offset (roughly 110.dp for container height)
                 val distancePx = 100 * node.distanceFactor
 
                 val offsetX = (distancePx * Math.cos(angleRad)).toFloat()
@@ -1027,6 +948,7 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier
                         .offset(x = offsetX.dp, y = offsetY.dp)
                         .clickable {
+                            HapticManager.performLightClick(context)
                             when (node) {
                                 is SonarNode.WifiPeer -> onPeerClick(node.peer)
                                 is SonarNode.BlePeer -> onBlePeerClick(node.blePeer)
@@ -1087,587 +1009,365 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // QR Code Generator Function for Feature 1
+    private fun generateQrCodeBitmap(content: String): Bitmap? {
+        return try {
+            val writer = QRCodeWriter()
+            val bitMatrix = writer.encode(content, BarcodeFormat.QR_CODE, 512, 512)
+            val width = bitMatrix.width
+            val height = bitMatrix.height
+            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.RGB_565)
+            for (x in 0 until width) {
+                for (y in 0 until height) {
+                    bitmap.setPixel(x, y, if (bitMatrix.get(x, y)) android.graphics.Color.BLACK else android.graphics.Color.WHITE)
+                }
+            }
+            bitmap
+        } catch (e: Exception) {
+            Log.e(tag, "Failed to generate QR code bitmap", e)
+            null
+        }
+    }
+
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     fun AppScreen() {
         val context = LocalContext.current
-        val keyboardController = LocalSoftwareKeyboardController.current
+        var currentTab by remember { mutableStateOf(0) } // 0: Radar, 1: Chats, 2: Transferencias, 3: Transmisión, 4: Ajustes
 
-        var tempName by remember { mutableStateOf(myNameState.value) }
-        var tempPhone by remember { mutableStateOf(myPhoneState.value) }
+        // Peer Action dialog states
+        var selectedPeerForActions by remember { mutableStateOf<PeerInfo?>(null) }
+        var selectedBlePeerForActions by remember { mutableStateOf<BackgroundDiscoveryService.BlePeer?>(null) }
 
-        val fileSelectorLauncher = rememberLauncherForActivityResult(
-            contract = ActivityResultContracts.GetContent()
-        ) { uri: Uri? ->
-            uri?.let { fileUri ->
-                val info = currentConnectionInfo.value
-                if (info != null && info.groupFormed) {
-                    val hostAddress = if (info.isGroupOwner) {
-                        // GO sends to the Client's dynamic IP captured when GO started its server
-                        fileTransferManager.lastClientIpAddress ?: "192.168.49.2"
-                    } else {
-                        // Client always sends to the GO's static IP
-                        info.groupOwnerAddress?.hostAddress ?: "192.168.49.1"
-                    }
+        Column(modifier = Modifier.fillMaxSize()) {
+            // Main Content Area based on Selected Bottom Tab
+            Box(modifier = Modifier.weight(1f)) {
+                when (currentTab) {
+                    0 -> RadarTabScreen(
+                        onPeerSelected = { selectedPeerForActions = it },
+                        onBlePeerSelected = { selectedBlePeerForActions = it }
+                    )
+                    1 -> ChatsTabScreen()
+                    2 -> TransfersTabScreen()
+                    3 -> TransmissionTabScreen()
+                    4 -> SettingsTabScreen()
+                }
+            }
 
-                    lifecycleScope.launch {
-                        Toast.makeText(context, "Enviando archivo a $hostAddress...", Toast.LENGTH_SHORT).show()
-                        fileTransferManager.sendFile(hostAddress, fileUri, isAutoPlayAudioEnabled.value)
-                    }
-                } else {
-                    Toast.makeText(context, "Por favor, conéctate primero", Toast.LENGTH_SHORT).show()
+            // Modern iOS Glassmorphism Bottom Navigation Bar
+            NavigationBar(
+                containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
+                tonalElevation = 8.dp
+            ) {
+                val navItems = listOf(
+                    Triple("Escáner", "📡", 0),
+                    Triple("Chats", "💬", 1),
+                    Triple("Envíos", "⚡", 2),
+                    Triple("Media", "📺", 3),
+                    Triple("Ajustes", "⚙️", 4)
+                )
+
+                navItems.forEach { (label, icon, tabIdx) ->
+                    val isSelected = currentTab == tabIdx
+                    NavigationBarItem(
+                        selected = isSelected,
+                        onClick = {
+                            HapticManager.performLightClick(context)
+                            currentTab = tabIdx
+                        },
+                        icon = { Text(icon, fontSize = 20.sp) },
+                        label = {
+                            Text(
+                                text = label,
+                                fontSize = 11.sp,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                            )
+                        },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = MaterialTheme.colorScheme.primary,
+                            indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
+                        )
+                    )
                 }
             }
         }
 
-        // BottomSheet/Dialog states for interactive peer actions
-        var selectedPeerForActions by remember { mutableStateOf<PeerInfo?>(null) }
-        var selectedBlePeerForActions by remember { mutableStateOf<BackgroundDiscoveryService.BlePeer?>(null) }
+        // Connection Prompts & Action Dialogs
+        connectionPromptPeer.value?.let { peer ->
+            AlertDialog(
+                onDismissRequest = { connectionPromptPeer.value = null },
+                title = { Text("Conexión Detectada") },
+                text = { Text("¿Deseas conectar con ${peer.userName}?", style = MaterialTheme.typography.bodyMedium) },
+                confirmButton = {
+                    Button(onClick = {
+                        wifiP2pHelper.connectToPeer(peer)
+                        connectionPromptPeer.value = null
+                    }) {
+                        Text("Sí, Conectar")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { connectionPromptPeer.value = null }) { Text("Rechazar") }
+                }
+            )
+        }
 
-        var activeTab by remember { mutableStateOf("direct") }
+        selectedPeerForActions?.let { peer ->
+            AlertDialog(
+                onDismissRequest = { selectedPeerForActions = null },
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        AvatarBubble(avatarIndex = peer.avatarIndex, size = 42.dp)
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(peer.userName)
+                    }
+                },
+                text = { Text("Elige qué acción realizar con este dispositivo:", style = MaterialTheme.typography.bodyMedium) },
+                confirmButton = {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Button(
+                            onClick = {
+                                activeChatPeerDeviceId.value = peer.sessionToken
+                                activeChatPeerName.value = peer.userName
+                                loadChatMessagesForPeer(peer.sessionToken)
+                                sessionManager.sendChatRequest(myNameState.value)
+                                currentTab = 1 // Switch to chats tab!
+                                selectedPeerForActions = null
+                            },
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                        ) {
+                            Text("💬 Iniciar Chat")
+                        }
+                        Button(
+                            onClick = {
+                                sessionManager.sendContactRequest(myNameState.value)
+                                Toast.makeText(context, "Solicitando intercambio de contacto...", Toast.LENGTH_SHORT).show()
+                                selectedPeerForActions = null
+                            },
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                        ) {
+                            Text("📇 Intercambiar Contacto")
+                        }
+                        Button(
+                            onClick = {
+                                wifiP2pHelper.connectToPeer(peer)
+                                selectedPeerForActions = null
+                            },
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary)
+                        ) {
+                            Text("🔗 Conectar y Enviar Archivos")
+                        }
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { selectedPeerForActions = null }) { Text("Cancelar") }
+                }
+            )
+        }
+
+        selectedBlePeerForActions?.let { bpeer ->
+            AlertDialog(
+                onDismissRequest = { selectedBlePeerForActions = null },
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        AvatarBubble(avatarIndex = bpeer.avatarIndex, size = 42.dp)
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(bpeer.userName)
+                    }
+                },
+                text = { Text("Dispositivo detectado de forma pasiva BLE. ¿Intentar conexión?", style = MaterialTheme.typography.bodyMedium) },
+                confirmButton = {
+                    Button(onClick = {
+                        val p2pPeer = wifiP2pHelper.findPeerByToken(bpeer.sessionToken)
+                        if (p2pPeer != null) {
+                            wifiP2pHelper.connectToPeer(p2pPeer)
+                        } else {
+                            wifiP2pHelper.startDiscoveryForToken(bpeer.sessionToken, bpeer.userName)
+                        }
+                        selectedBlePeerForActions = null
+                    }) {
+                        Text("Conectar")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { selectedBlePeerForActions = null }) { Text("Cancelar") }
+                }
+            )
+        }
+
+        // Chat Request Dialog
+        chatRequestPrompt.value?.let { prompt ->
+            AlertDialog(
+                onDismissRequest = {
+                    prompt.onDecision(false)
+                    chatRequestPrompt.value = null
+                },
+                title = { Text("Solicitud de Chat") },
+                text = { Text("${prompt.peerName} quiere iniciar un chat contigo. ¿Aceptas?") },
+                confirmButton = {
+                    Button(onClick = {
+                        prompt.onDecision(true)
+                        chatRequestPrompt.value = null
+                        currentTab = 1
+                    }) {
+                        Text("Aceptar")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        prompt.onDecision(false)
+                        chatRequestPrompt.value = null
+                    }) { Text("Rechazar") }
+                }
+            )
+        }
+
+        // Contact Request Dialog
+        contactRequestPrompt.value?.let { prompt ->
+            AlertDialog(
+                onDismissRequest = {
+                    prompt.onDecision(false)
+                    contactRequestPrompt.value = null
+                },
+                title = { Text("Intercambiar Contactos") },
+                text = { Text("${prompt.peerName} quiere intercambiar contactos mutuamente. ¿Proceder?") },
+                confirmButton = {
+                    Button(onClick = {
+                        prompt.onDecision(true)
+                        contactRequestPrompt.value = null
+                    }) {
+                        Text("Intercambiar")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        prompt.onDecision(false)
+                        contactRequestPrompt.value = null
+                    }) { Text("Rechazar") }
+                }
+            )
+        }
+
+        incomingFileRequest.value?.let { request ->
+            val sizeInMb = String.format("%.2f MB", request.fileSize.toDouble() / (1024 * 1024))
+            AlertDialog(
+                onDismissRequest = {
+                    request.onReject()
+                    incomingFileRequest.value = null
+                },
+                title = { Text("Confirmación de Recepción") },
+                text = { Text("¿Deseas aceptar \"${request.fileName}\" ($sizeInMb)?") },
+                confirmButton = {
+                    Button(onClick = {
+                        request.onAccept()
+                        incomingFileRequest.value = null
+                    }) {
+                        Text("Aceptar")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        request.onReject()
+                        incomingFileRequest.value = null
+                    }) { Text("Rechazar") }
+                }
+            )
+        }
+    }
+
+    // --- TAB 0: Radar & Escáner ---
+    @Composable
+    fun RadarTabScreen(
+        onPeerSelected: (PeerInfo) -> Unit,
+        onBlePeerSelected: (BackgroundDiscoveryService.BlePeer) -> Unit
+    ) {
+        val context = LocalContext.current
+        val isConnected = currentConnectionInfo.value?.groupFormed ?: false
 
         Column(
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp)
+                .verticalScroll(rememberScrollState()),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // iOS Segmented Tab Selector
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp)
-                    .background(Color.Gray.copy(alpha = 0.15f), RoundedCornerShape(12.dp))
-                    .padding(4.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                val tabs = listOf("Conexión Directa", "Compartir con iPhone")
-                tabs.forEachIndexed { index, title ->
-                    val isSelected = (index == 0 && activeTab == "direct") || (index == 1 && activeTab == "airshare")
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent)
-                            .clickable {
-                                activeTab = if (index == 0) "direct" else "airshare"
-                            }
-                            .padding(vertical = 10.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = title,
-                            color = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 14.sp
-                        )
-                    }
-                }
-            }
-
-            if (activeTab == "airshare") {
-                AirShareScreen(
-                    ipAddress = airShareLocalIp.value,
-                    serverPort = 8989,
-                    isServerActive = isAirShareServerActive.value,
-                    onToggleServer = {
-                        toggleAirShareServer()
-                    },
-                    modifier = Modifier.weight(1f)
-                )
-            } else {
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(horizontal = 16.dp)
-                        .verticalScroll(rememberScrollState()),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Top
-                ) {
-                    Text(
-                        text = "Conexión Directa",
-                style = MaterialTheme.typography.headlineMedium.copy(
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary
-                ),
-                modifier = Modifier.padding(top = 24.dp)
+            Text(
+                text = "Escáner Sonal y Búsqueda",
+                style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(bottom = 4.dp)
             )
             Text(
-                text = "Alternativa moderna y rápida a Zapya",
-                style = MaterialTheme.typography.bodyMedium,
+                text = "Detección rápida de dispositivos cercanos por Wi-Fi Direct y BLE",
+                style = MaterialTheme.typography.bodySmall,
                 color = Color.Gray,
                 modifier = Modifier.padding(bottom = 12.dp)
-            )
-
-            // Dynamic Radar/Sonar Scan Screen
-            Text(
-                text = "Escáner Sonal Moderno",
-                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 8.dp),
-                textAlign = TextAlign.Start
             )
 
             ModernSonarRadar(
                 myAvatarIndex = myAvatarState.value,
                 peers = peersState.value,
                 blePeers = blePeersMap.values.toList(),
-                onPeerClick = { peer ->
-                    selectedPeerForActions = peer
-                },
-                onBlePeerClick = { blePeer ->
-                    selectedBlePeerForActions = blePeer
-                },
-                modifier = Modifier.padding(bottom = 16.dp)
+                onPeerClick = onPeerSelected,
+                onBlePeerClick = onBlePeerSelected
             )
 
-            // Alert banner if WiFi is disabled
-            AnimatedVisibility(visible = !isWifiEnabledState.value) {
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 16.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text(
-                            text = "Wi-Fi está desactivado",
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onErrorContainer
-                        )
-                        Text(
-                            text = "Para usar Wi-Fi Direct, por favor activa el Wi-Fi en los ajustes de tu sistema.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onErrorContainer
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Button(
-                            onClick = {
-                                try {
-                                    context.startActivity(Intent(android.provider.Settings.ACTION_WIFI_SETTINGS))
-                                } catch (e: Exception) {
-                                    Toast.makeText(context, "No se pudieron abrir los ajustes de Wi-Fi", Toast.LENGTH_SHORT).show()
-                                }
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-                        ) {
-                            Text("Abrir Ajustes", color = Color.White)
-                        }
-                    }
-                }
-            }
+            Spacer(modifier = Modifier.height(16.dp))
 
-            val recentPeers = remember(peersState.value) { dbHelper.getRecentPeers() }
-            if (recentPeers.isNotEmpty()) {
-                Text(
-                    text = "Dispositivos Cercanos Recientes (Historial)",
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                    textAlign = TextAlign.Start
-                )
-
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 16.dp),
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        recentPeers.forEach { dbPeer ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                AvatarBubble(avatarIndex = dbPeer.avatar, size = 32.dp)
-                                Spacer(modifier = Modifier.width(12.dp))
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = dbPeer.name,
-                                        fontWeight = FontWeight.SemiBold,
-                                        fontSize = 14.sp
-                                    )
-                                    if (dbPeer.phone.isNotEmpty()) {
-                                        Text(
-                                            text = "Tel: ${dbPeer.phone}",
-                                            fontSize = 11.sp,
-                                            color = Color.Gray
-                                        )
-                                    }
-                                }
-                                Text(
-                                    text = "Guardado en BD",
-                                    fontSize = 10.sp,
-                                    color = Color.Gray
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
+            // Proximity Sonar Bump Feature Card (Feature 3)
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f))
             ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        text = "Tu Identificación",
-                        fontWeight = FontWeight.Bold,
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = tempName,
-                        onValueChange = {
-                            tempName = it
-                            myNameState.value = it
-                            wifiP2pHelper.setDeviceName(it)
-                            getSharedPreferences("conexion_prefs", Context.MODE_PRIVATE)
-                                .edit()
-                                .putString("user_name", it)
-                                .apply()
-                            dbHelper.saveProfile(it, myPhoneState.value, myAvatarState.value)
-                        },
-                        label = { Text("Nombre para mostrar") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                        keyboardActions = KeyboardActions(onDone = { keyboardController?.hide() }),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    Spacer(modifier = Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = tempPhone,
-                        onValueChange = {
-                            tempPhone = it
-                            myPhoneState.value = it
-                            getSharedPreferences("conexion_prefs", Context.MODE_PRIVATE)
-                                .edit()
-                                .putString("phone_number", it)
-                                .apply()
-                            dbHelper.saveProfile(myNameState.value, it, myAvatarState.value)
-                        },
-                        label = { Text("Número de teléfono") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                        keyboardActions = KeyboardActions(onDone = { keyboardController?.hide() }),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Text(
-                        text = "Elige tu avatar de perfil:",
-                        style = MaterialTheme.typography.bodySmall,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        AVATAR_DESIGNS.forEachIndexed { idx, design ->
-                            val isSelected = myAvatarState.value == idx
-                            Box(
-                                modifier = Modifier
-                                    .size(36.dp)
-                                    .clip(CircleShape)
-                                    .background(
-                                        if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
-                                        else Color.Transparent
-                                    )
-                                    .border(
-                                        if (isSelected) 2.dp else 1.dp,
-                                        if (isSelected) MaterialTheme.colorScheme.primary else Color.LightGray,
-                                        CircleShape
-                                    )
-                                    .padding(2.dp)
-                                    .clip(CircleShape)
-                                    .background(
-                                        androidx.compose.ui.graphics.Brush.linearGradient(design.bgGradients)
-                                    )
-                                    .clickable {
-                                        myAvatarState.value = idx
-                                        getSharedPreferences("conexion_prefs", Context.MODE_PRIVATE)
-                                            .edit()
-                                            .putInt("avatar_index", idx)
-                                            .apply()
-                                        dbHelper.saveProfile(myNameState.value, myPhoneState.value, idx)
-                                    },
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(design.emoji, fontSize = 18.sp)
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-                    HorizontalDivider()
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Búsqueda BLE en Segundo Plano",
-                                fontWeight = FontWeight.Bold,
-                                style = MaterialTheme.typography.bodyMedium
-                            )
-                            Text(
-                                text = "Encuentra dispositivos de forma pasiva con el teléfono bloqueado o cerrado.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = Color.Gray
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Switch(
-                            checked = isBgDiscoveryEnabled.value,
-                            onCheckedChange = { isEnabled ->
-                                isBgDiscoveryEnabled.value = isEnabled
-                                getSharedPreferences("conexion_prefs", Context.MODE_PRIVATE)
-                                    .edit()
-                                    .putBoolean("bg_discovery_enabled", isEnabled)
-                                    .apply()
-
-                                if (isEnabled) {
-                                    startBgDiscoveryService()
-                                    Toast.makeText(context, "Búsqueda en segundo plano iniciada", Toast.LENGTH_SHORT).show()
-                                } else {
-                                    stopBgDiscoveryService()
-                                    Toast.makeText(context, "Búsqueda en segundo plano detenida", Toast.LENGTH_SHORT).show()
-                                }
-                            }
-                        )
-                    }
-                }
-            }
-
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 16.dp),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        text = "Configuración de Compartir Pantalla",
-                        fontWeight = FontWeight.Bold,
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Permitir Compartir Pantalla",
-                                fontWeight = FontWeight.Bold,
-                                style = MaterialTheme.typography.bodyMedium
-                            )
-                            Text(
-                                text = "Habilita la capacidad de transmitir pantalla a otros dispositivos.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = Color.Gray
-                            )
-                        }
-                        Switch(
-                            checked = isScreenShareEnabled.value,
-                            onCheckedChange = { isScreenShareEnabled.value = it }
-                        )
-                    }
-
-                    if (isScreenShareEnabled.value) {
-                        Spacer(modifier = Modifier.height(12.dp))
-                        HorizontalDivider()
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        // Resolution Selector
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("Resolución:", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-                            Row {
-                                listOf("720p", "1080p", "Original").forEach { res ->
-                                    val isSelected = screenShareResolution.value == res
-                                    Box(
-                                        modifier = Modifier
-                                            .padding(horizontal = 4.dp)
-                                            .clip(RoundedCornerShape(8.dp))
-                                            .background(if (isSelected) MaterialTheme.colorScheme.primary else Color.Gray.copy(alpha = 0.2f))
-                                            .clickable { screenShareResolution.value = res }
-                                            .padding(horizontal = 8.dp, vertical = 4.dp)
-                                    ) {
-                                        Text(res, color = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                    }
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        // Quality Selector
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("Calidad:", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-                            Row {
-                                listOf("Baja", "Media", "Alta").forEach { q ->
-                                    val isSelected = screenShareQuality.value == q
-                                    Box(
-                                        modifier = Modifier
-                                            .padding(horizontal = 4.dp)
-                                            .clip(RoundedCornerShape(8.dp))
-                                            .background(if (isSelected) MaterialTheme.colorScheme.primary else Color.Gray.copy(alpha = 0.2f))
-                                            .clickable { screenShareQuality.value = q }
-                                            .padding(horizontal = 8.dp, vertical = 4.dp)
-                                    ) {
-                                        Text(q, color = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                    }
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        // FPS Slider
-                        Column(modifier = Modifier.fillMaxWidth()) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text("FPS (Fotogramas):", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-                                Text("${screenShareFps.value} FPS", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, fontSize = 14.sp)
-                            }
-                            Slider(
-                                value = screenShareFps.value.toFloat(),
-                                onValueChange = { screenShareFps.value = it.toInt() },
-                                valueRange = 15f..60f,
-                                steps = 2
-                            )
-                        }
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(24.dp))
-
-            // TAREA 4 — Botón de envío manual + integración con el share sheet
-            val showShareDialog = pendingShareUris.value.isNotEmpty()
-            if (showShareDialog) {
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 16.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
-                    shape = RoundedCornerShape(16.dp)
+                Row(
+                    modifier = Modifier.padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("📡 Acoustic Sonar Bump", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                        Text("Emite un pulso ultrasónico para choque de teléfonos y sincronización rápida.", fontSize = 12.sp, color = Color.Gray)
+                    }
+                    Button(
+                        onClick = {
+                            val token = generateSessionToken()
+                            audioBeaconEmitter?.start(token)
+                            HapticManager.performIPhoneHaptic(context)
+                            Toast.makeText(context, "Emitiendo tono ultrasónico...", Toast.LENGTH_SHORT).show()
+                        }
                     ) {
-                        Text(
-                            text = "Enviar a dispositivo cercano",
-                            fontWeight = FontWeight.Bold,
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        Column(modifier = Modifier.fillMaxWidth()) {
-                            pendingShareUris.value.forEach { uri ->
-                                FilePreviewItem(uri = uri)
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Row(
-                            horizontalArrangement = Arrangement.SpaceEvenly,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Button(
-                                onClick = {
-                                    val token = generateSessionToken()
-                                    currentSessionToken = token
-
-                                    // Send Intent to BackgroundDiscoveryService to initiate SENDING mode
-                                    val serviceIntent = Intent(context, BackgroundDiscoveryService::class.java).apply {
-                                        action = BackgroundDiscoveryService.ACTION_SET_SENDING
-                                        putExtra(BackgroundDiscoveryService.EXTRA_PEER_TOKEN, token)
-                                        putExtra(BackgroundDiscoveryService.EXTRA_USER_NAME, myNameState.value)
-                                    }
-                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                        context.startForegroundService(serviceIntent)
-                                    } else {
-                                        context.startService(serviceIntent)
-                                    }
-
-                                    // Start Audio Beacon Emitter
-                                    audioBeaconEmitter?.start(token)
-
-                                    // Start local Wi-Fi Direct presence advertising and discovery
-                                    wifiP2pHelper.startAdvertising(myNameState.value, token)
-                                    wifiP2pHelper.startDiscovery()
-
-                                    Toast.makeText(context, "Transmitiendo y buscando receptores...", Toast.LENGTH_SHORT).show()
-                                }
-                            ) {
-                                Text("Buscar y enviar")
-                            }
-
-                            TextButton(
-                                onClick = {
-                                    pendingShareUris.value = emptyList()
-                                }
-                            ) {
-                                Text("Cancelar", color = MaterialTheme.colorScheme.onPrimaryContainer)
-                            }
-                        }
+                        Text("Emitir Pulso")
                     }
                 }
             }
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Manual fallback button "Buscar dispositivos ahora"
             Button(
                 onClick = {
                     wifiP2pHelper.startDiscovery()
-                    Toast.makeText(context, "Buscando dispositivos Wi-Fi Direct manualmente...", Toast.LENGTH_SHORT).show()
+                    HapticManager.performLightClick(context)
+                    Toast.makeText(context, "Buscando dispositivos cercanos...", Toast.LENGTH_SHORT).show()
                 },
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("Buscar dispositivos ahora (Manual)")
+                Text("Escanear Ahora")
             }
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(16.dp))
 
-            val isConnected = currentConnectionInfo.value?.groupFormed ?: false
             Card(
                 modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(
-                    containerColor = if (isConnected) Color(0xFFE8F5E9) else Color(0xFFFFEBEE)
-                ),
-                shape = RoundedCornerShape(12.dp)
+                    containerColor = if (isConnected) Color(0xFF10B981).copy(alpha = 0.2f) else Color(0xFFEF4444).copy(alpha = 0.2f)
+                )
             ) {
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
+                    modifier = Modifier.padding(16.dp).fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
@@ -1675,17 +1375,12 @@ class MainActivity : ComponentActivity() {
                         Text(
                             text = if (isConnected) "Estado: Conectado" else "Estado: Desconectado",
                             fontWeight = FontWeight.Bold,
-                            color = if (isConnected) Color(0xFF2E7D32) else Color(0xFFC62828)
+                            color = if (isConnected) Color(0xFF10B981) else Color(0xFFEF4444)
                         )
                         if (isConnected) {
-                            Text(
-                                text = "IP del Servidor: ${currentConnectionInfo.value?.groupOwnerAddress?.hostAddress ?: ""}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = Color.DarkGray
-                            )
+                            Text("IP: ${currentConnectionInfo.value?.groupOwnerAddress?.hostAddress}", fontSize = 12.sp, color = Color.Gray)
                         }
                     }
-
                     if (isConnected) {
                         Button(
                             onClick = { wifiP2pHelper.disconnect() },
@@ -1696,824 +1391,549 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+        }
+    }
 
-            Spacer(modifier = Modifier.height(24.dp))
+    // --- TAB 1: Chats Screen (iPhone Messenger Style) ---
+    @Composable
+    fun ChatsTabScreen() {
+        val context = LocalContext.current
+        var messageInput by remember { mutableStateOf("") }
+        var chatThreads by remember { mutableStateOf(emptyList<DbChatThread>()) }
 
-            // Chat Interface
-            if (isChatActive.value) {
-                var messageText by remember { mutableStateOf("") }
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 16.dp),
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "Chat con " + (if (activeChatPeerName.value.isNotEmpty()) activeChatPeerName.value else "Dispositivo"),
-                                fontWeight = FontWeight.Bold,
-                                style = MaterialTheme.typography.titleMedium
-                            )
-                            IconButton(onClick = {
-                                isChatActive.value = false
-                                Toast.makeText(context, "Chat finalizado", Toast.LENGTH_SHORT).show()
-                            }) {
-                                Text("❌", fontSize = 16.sp)
-                            }
-                        }
+        LaunchedEffect(Unit) {
+            chatThreads = dbHelper.getAllChatConversations()
+        }
 
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(200.dp)
-                                .background(Color(0xFFF1F5F9), RoundedCornerShape(8.dp))
-                                .padding(8.dp)
-                        ) {
-                            val scrollState = rememberScrollState()
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .verticalScroll(scrollState)
-                            ) {
-                                chatMessages.forEach { msg ->
-                                    val alignment = if (msg.isMe) Alignment.End else Alignment.Start
-                                    val bgCol = if (msg.isMe) MaterialTheme.colorScheme.primary else Color(0xFFE2E8F0)
-                                    val textCol = if (msg.isMe) Color.White else Color.Black
-                                    Column(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(vertical = 4.dp),
-                                        horizontalAlignment = alignment
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .background(bgCol, RoundedCornerShape(12.dp))
-                                                .padding(horizontal = 12.dp, vertical = 8.dp)
-                                        ) {
-                                            Text(text = msg.text, color = textCol, fontSize = 14.sp)
-                                        }
-                                    }
-                                }
-                            }
-                            LaunchedEffect(chatMessages.size) {
-                                scrollState.animateScrollTo(scrollState.maxValue)
-                            }
-                        }
+        if (activeChatPeerDeviceId.value.isEmpty()) {
+            // Chat Conversation List
+            Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+                Text(
+                    text = "Mensajes",
+                    style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(bottom = 16.dp)
+                )
 
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            OutlinedTextField(
-                                value = messageText,
-                                onValueChange = { messageText = it },
-                                modifier = Modifier.weight(1f),
-                                placeholder = { Text("Escribe un mensaje...") },
-                                singleLine = true,
-                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                                keyboardActions = KeyboardActions(onSend = {
-                                    if (messageText.trim().isNotEmpty()) {
-                                        sessionManager.sendChatMessage(messageText.trim())
-                                        chatMessages.add(ChatMessage(messageText.trim(), true))
-                                        messageText = ""
-                                    }
-                                })
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Button(
-                                onClick = {
-                                    if (messageText.trim().isNotEmpty()) {
-                                        sessionManager.sendChatMessage(messageText.trim())
-                                        chatMessages.add(ChatMessage(messageText.trim(), true))
-                                        messageText = ""
-                                    }
-                                }
-                            ) {
-                                Text("Enviar")
-                            }
+                if (chatThreads.isEmpty()) {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("💬", fontSize = 48.sp)
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text("No hay conversaciones iniciadas.", color = Color.Gray)
+                            Text("Selecciona un dispositivo en el Escáner para chatear.", fontSize = 12.sp, color = Color.Gray)
                         }
                     }
-                }
-            }
-
-            if (isConnected) {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(16.dp)
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text(
-                            text = "Compartir Archivos y Funciones",
-                            fontWeight = FontWeight.Bold,
-                            style = MaterialTheme.typography.titleMedium
-                        )
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Button(
-                            onClick = { fileSelectorLauncher.launch("*/*") },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("Seleccionar y Enviar Archivo")
-                        }
-
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                text = "Reproducir automáticamente si es audio",
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Medium
-                            )
-                            Switch(
-                                checked = isAutoPlayAudioEnabled.value,
-                                onCheckedChange = { isAutoPlayAudioEnabled.value = it }
-                            )
-                        }
-
-                        if (isScreenShareEnabled.value) {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Button(
-                                onClick = {
-                                    activeScreenShareSender.value = true
-                                    sessionManager.sendScreenShareStart(
-                                        myNameState.value,
-                                        screenShareResolution.value,
-                                        screenShareFps.value,
-                                        screenShareQuality.value
-                                    )
-                                    Toast.makeText(context, "Iniciando transmisión de pantalla...", Toast.LENGTH_SHORT).show()
-                                },
-                                modifier = Modifier.fillMaxWidth(),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFA855F7))
-                            ) {
-                                Text("🖥️ Compartir Pantalla")
-                            }
-                        }
-
-                        AnimatedVisibility(visible = isTransferring.value) {
-                            Column(
+                } else {
+                    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(chatThreads) { thread ->
+                            Card(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(top = 16.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally
+                                    .clickable {
+                                        activeChatPeerDeviceId.value = thread.peerDeviceId
+                                        activeChatPeerName.value = thread.peerName
+                                        loadChatMessagesForPeer(thread.peerDeviceId)
+                                    },
+                                shape = RoundedCornerShape(16.dp),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
                             ) {
+                                Row(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    AvatarBubble(avatarIndex = thread.avatarIndex, size = 48.dp)
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(thread.peerName, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                                        Text(thread.lastMessage, maxLines = 1, fontSize = 13.sp, color = Color.Gray)
+                                    }
+                                    Text(
+                                        text = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(thread.timestamp)),
+                                        fontSize = 11.sp,
+                                        color = Color.Gray
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            // Individual Messenger Chat Conversation View
+            Column(modifier = Modifier.fillMaxSize()) {
+                // Header Bar
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.surface)
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = { activeChatPeerDeviceId.value = "" }) {
+                        Text("◀", fontSize = 18.sp, color = MaterialTheme.colorScheme.primary)
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(activeChatPeerName.value, fontWeight = FontWeight.Bold, fontSize = 18.sp, modifier = Modifier.weight(1f))
+                    IconButton(onClick = {
+                        activeChatPeerDeviceId.value = ""
+                    }) {
+                        Text("❌", fontSize = 16.sp)
+                    }
+                }
+
+                HorizontalDivider(color = Color.Gray.copy(alpha = 0.2f))
+
+                // Chat Messages List
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = 12.dp)
+                ) {
+                    val scrollState = rememberScrollState()
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .verticalScroll(scrollState),
+                        verticalArrangement = Arrangement.Bottom
+                    ) {
+                        chatMessages.forEach { msg ->
+                            val alignment = if (msg.isMe) Alignment.End else Alignment.Start
+                            val bubbleColor = if (msg.isMe) MaterialTheme.colorScheme.primary else Color(0xFF334155)
+                            val textColor = Color.White
+
+                            Column(
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                horizontalAlignment = alignment
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .clip(
+                                            RoundedCornerShape(
+                                                topStart = 16.dp,
+                                                topEnd = 16.dp,
+                                                bottomStart = if (msg.isMe) 16.dp else 2.dp,
+                                                bottomEnd = if (msg.isMe) 2.dp else 16.dp
+                                            )
+                                        )
+                                        .background(bubbleColor)
+                                        .padding(horizontal = 14.dp, vertical = 10.dp)
+                                ) {
+                                    Text(text = msg.message, color = textColor, fontSize = 15.sp)
+                                }
                                 Text(
-                                    text = "Enviando: ${transferFileName.value}",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    textAlign = TextAlign.Center
+                                    text = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(msg.timestamp)),
+                                    fontSize = 10.sp,
+                                    color = Color.Gray,
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
                                 )
-                                Spacer(modifier = Modifier.height(8.dp))
-                                LinearProgressIndicator(
-                                    progress = transferProgress.value,
-                                    modifier = Modifier.fillMaxWidth()
+                            }
+                        }
+                    }
+                    LaunchedEffect(chatMessages.size) {
+                        scrollState.animateScrollTo(scrollState.maxValue)
+                    }
+                }
+
+                // Chat Input Field
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedTextField(
+                        value = messageInput,
+                        onValueChange = { messageInput = it },
+                        modifier = Modifier.weight(1f),
+                        placeholder = { Text("Escribe un mensaje estilo iPhone...") },
+                        shape = RoundedCornerShape(24.dp),
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                        keyboardActions = KeyboardActions(onSend = {
+                            if (messageInput.trim().isNotEmpty()) {
+                                val msg = sessionManager.sendChatMessage(
+                                    text = messageInput.trim(),
+                                    myName = myNameState.value,
+                                    peerDeviceId = activeChatPeerDeviceId.value
                                 )
-                                Spacer(modifier = Modifier.height(4.dp))
+                                chatMessages.add(msg)
+                                messageInput = ""
+                                HapticManager.performLightClick(context)
+                            }
+                        })
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    IconButton(
+                        onClick = {
+                            if (messageInput.trim().isNotEmpty()) {
+                                val msg = sessionManager.sendChatMessage(
+                                    text = messageInput.trim(),
+                                    myName = myNameState.value,
+                                    peerDeviceId = activeChatPeerDeviceId.value
+                                )
+                                chatMessages.add(msg)
+                                messageInput = ""
+                                HapticManager.performLightClick(context)
+                            }
+                        },
+                        modifier = Modifier
+                            .size(48.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primary)
+                    ) {
+                        Text("⬆", fontSize = 20.sp, color = Color.White)
+                    }
+                }
+            }
+        }
+    }
+
+    // --- TAB 2: Transferencias Tab ---
+    @Composable
+    fun TransfersTabScreen() {
+        val context = LocalContext.current
+        var history by remember { mutableStateOf(emptyList<DbTransferRecord>()) }
+
+        LaunchedEffect(Unit) {
+            history = dbHelper.getTransferHistory()
+        }
+
+        val filePicker = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.GetContent()
+        ) { uri: Uri? ->
+            uri?.let { fileUri ->
+                val info = currentConnectionInfo.value
+                if (info != null && info.groupFormed) {
+                    val hostAddress = if (info.isGroupOwner) {
+                        fileTransferManager.lastClientIpAddress ?: "192.168.49.2"
+                    } else {
+                        info.groupOwnerAddress?.hostAddress ?: "192.168.49.1"
+                    }
+                    lifecycleScope.launch {
+                        fileTransferManager.sendFile(hostAddress, fileUri, isAutoPlayAudioEnabled.value)
+                    }
+                } else {
+                    Toast.makeText(context, "Conéctate a un dispositivo primero", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+
+        Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+            Text(
+                text = "Transferencia de Archivos",
+                style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(bottom = 12.dp)
+            )
+
+            // Active Transfer Bar
+            AnimatedVisibility(visible = isTransferring.value) {
+                Card(
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text("Enviando/Recibiendo: ${transferFileName.value}", fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.height(8.dp))
+                        LinearProgressIndicator(
+                            progress = transferProgress.value,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text("${(transferProgress.value * 100).toInt()}%", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+
+            Button(
+                onClick = { filePicker.launch("*/*") },
+                modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)
+            ) {
+                Text("📁 Seleccionar y Enviar Archivo")
+            }
+
+            Text("Historial de Transferencias", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(bottom = 8.dp))
+
+            if (history.isEmpty()) {
+                Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Text("No hay historial de transferencias.", color = Color.Gray)
+                }
+            } else {
+                LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(history) { item ->
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                        ) {
+                            Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text(if (item.isIncoming) "⬇" else "⬆", fontSize = 20.sp, color = if (item.isIncoming) Color(0xFF10B981) else Color(0xFF3B82F6))
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(item.fileName, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 1)
+                                    val sizeMb = String.format("%.2f MB", item.fileSize.toDouble() / (1024 * 1024))
+                                    Text("$sizeMb • ${item.status}", fontSize = 11.sp, color = Color.Gray)
+                                }
                                 Text(
-                                    text = "${(transferProgress.value * 100).toInt()}%",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontWeight = FontWeight.Bold
+                                    text = SimpleDateFormat("dd/MM HH:mm", Locale.getDefault()).format(Date(item.timestamp)),
+                                    fontSize = 10.sp,
+                                    color = Color.Gray
                                 )
                             }
                         }
                     }
                 }
             }
-                } // End of activeTab == "direct" Column
-            }
+        }
+    }
 
-            connectionPromptPeer.value?.let { peer ->
-                AlertDialog(
-                    onDismissRequest = { connectionPromptPeer.value = null },
-                    title = { Text("Conexión Detectada") },
-                    text = {
-                        Text(
-                            text = "¿Deseas aceptar la transferencia y conectarte con ${peer.userName}?",
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                    },
-                    confirmButton = {
-                        Button(
-                            onClick = {
-                                val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-                                if (wifiManager?.isWifiEnabled != true) {
-                                    // Wi-Fi is disabled, prompt user with ACTION_INTERNET_CONNECTIVITY panel as required by TAREA 6
-                                    try {
-                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                                            context.startActivity(Intent(android.provider.Settings.Panel.ACTION_INTERNET_CONNECTIVITY))
-                                        } else {
-                                            context.startActivity(Intent(android.provider.Settings.ACTION_WIFI_SETTINGS))
-                                        }
-                                    } catch (e: Exception) {
-                                        Toast.makeText(context, "Por favor, enciende el Wi-Fi para continuar.", Toast.LENGTH_SHORT).show()
-                                    }
-                                }
-                                wifiP2pHelper.connectToPeer(peer)
-                                connectionPromptPeer.value = null
-                            }
-                        ) {
-                            Text("Sí, Conectar y Aceptar")
-                        }
-                    },
-                    dismissButton = {
-                        TextButton(
-                            onClick = { connectionPromptPeer.value = null }
-                        ) {
-                            Text("Rechazar")
-                        }
-                    }
-                )
-            }
+    // --- TAB 3: Transmisión Media Screen ---
+    @Composable
+    fun TransmissionTabScreen() {
+        val context = LocalContext.current
 
-            val singleToken = showSingleCandidateManual.value
-            if (singleToken != null && sendingCandidates.containsKey(singleToken)) {
-                val peer = sendingCandidates[singleToken]!!
-                AlertDialog(
-                    onDismissRequest = { showSingleCandidateManual.value = null; sendingCandidates.remove(singleToken) },
-                    title = { Text("Dispositivo Compartiendo") },
-                    text = {
-                        Text(
-                            text = "Se ha detectado a ${peer.userName} compartiendo un archivo.",
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                    },
-                    confirmButton = {
-                        Button(
-                            onClick = {
-                                val p2pPeer = wifiP2pHelper.findPeerByToken(peer.sessionToken)
-                                if (p2pPeer != null) {
-                                    wifiP2pHelper.connectToPeer(p2pPeer)
-                                } else {
-                                    Toast.makeText(context, "Buscando dirección de red segura...", Toast.LENGTH_SHORT).show()
-                                    wifiP2pHelper.startDiscoveryForToken(peer.sessionToken, peer.userName)
-                                }
-                                showSingleCandidateManual.value = null
-                                sendingCandidates.remove(singleToken)
-                            }
-                        ) {
-                            Text("Conectar Ahora")
-                        }
-                    },
-                    dismissButton = {
-                        TextButton(
-                            onClick = { showSingleCandidateManual.value = null; sendingCandidates.remove(singleToken) }
-                        ) {
-                            Text("Ignorar")
-                        }
-                    }
-                )
-            }
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp)
+                .verticalScroll(rememberScrollState()),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = "Transmisión en Tiempo Real",
+                style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(bottom = 12.dp)
+            )
 
-            if (sendingCandidates.size >= 2) {
-                AlertDialog(
-                    onDismissRequest = { sendingCandidates.clear() },
-                    title = { Text("Múltiples Dispositivos Cerca") },
-                    text = {
-                        Column {
-                            Text(
-                                text = "Se detectaron varios dispositivos compartiendo cerca, elige con cuál conectar:",
-                                style = MaterialTheme.typography.bodyMedium
-                            )
-                            Spacer(modifier = Modifier.height(16.dp))
-                            sendingCandidates.values.forEach { peer ->
-                                Card(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(vertical = 4.dp),
-                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-                                ) {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(12.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
-                                        Text(
-                                            text = peer.userName,
-                                            fontWeight = FontWeight.Bold,
-                                            modifier = Modifier.weight(1f)
-                                        )
-                                        Button(
-                                            onClick = {
-                                                val p2pPeer = wifiP2pHelper.findPeerByToken(peer.sessionToken)
-                                                if (p2pPeer != null) {
-                                                    wifiP2pHelper.connectToPeer(p2pPeer)
-                                                } else {
-                                                    Toast.makeText(context, "Buscando dirección de red...", Toast.LENGTH_SHORT).show()
-                                                    wifiP2pHelper.startDiscoveryForToken(peer.sessionToken, peer.userName)
-                                                }
-                                                sendingCandidates.clear()
-                                            }
-                                        ) {
-                                            Text("Conectar")
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    confirmButton = {},
-                    dismissButton = {
-                        TextButton(
-                            onClick = { sendingCandidates.clear() }
-                        ) {
-                            Text("Cancelar")
-                        }
-                    }
-                )
-            }
-
-            // Chat prompt dialog
-            chatRequestPrompt.value?.let { prompt ->
-                AlertDialog(
-                    onDismissRequest = {
-                        prompt.onDecision(false)
-                        chatRequestPrompt.value = null
-                    },
-                    title = { Text("Solicitud de Chat") },
-                    text = {
-                        Text(
-                            text = "${prompt.peerName} quiere iniciar un chat contigo. ¿Aceptas?",
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                    },
-                    confirmButton = {
-                        Button(
-                            onClick = {
-                                prompt.onDecision(true)
-                                chatRequestPrompt.value = null
-                            }
-                        ) {
-                            Text("Aceptar")
-                        }
-                    },
-                    dismissButton = {
-                        TextButton(
-                            onClick = {
-                                prompt.onDecision(false)
-                                chatRequestPrompt.value = null
-                            }
-                        ) {
-                            Text("Rechazar")
-                        }
-                    }
-                )
-            }
-
-            // Contact request dialog
-            contactRequestPrompt.value?.let { prompt ->
-                AlertDialog(
-                    onDismissRequest = {
-                        prompt.onDecision(false)
-                        contactRequestPrompt.value = null
-                    },
-                    title = { Text("Intercambiar Contactos") },
-                    text = {
-                        Text(
-                            text = "${prompt.peerName} quiere intercambiar contactos mutuamente (Nombre y Teléfono). Esto guardará su contacto en tu libreta y enviará el tuyo si aceptas. ¿Proceder?",
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                    },
-                    confirmButton = {
-                        Button(
-                            onClick = {
-                                prompt.onDecision(true)
-                                contactRequestPrompt.value = null
-                            }
-                        ) {
-                            Text("Intercambiar")
-                        }
-                    },
-                    dismissButton = {
-                        TextButton(
-                            onClick = {
-                                prompt.onDecision(false)
-                                contactRequestPrompt.value = null
-                            }
-                        ) {
-                            Text("Rechazar")
-                        }
-                    }
-                )
-            }
-
-            // Bottom Dialog sheets for tapping on sonar nodes
-            selectedPeerForActions?.let { peer ->
-                AlertDialog(
-                    onDismissRequest = { selectedPeerForActions = null },
-                    title = {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            AvatarBubble(avatarIndex = peer.avatarIndex, size = 42.dp)
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Text(peer.userName)
-                        }
-                    },
-                    text = {
-                        Column {
-                            Text(
-                                text = "Elige qué acción deseas realizar con este dispositivo cercano:",
-                                style = MaterialTheme.typography.bodyMedium
-                            )
-                        }
-                    },
-                    confirmButton = {
-                        Column(modifier = Modifier.fillMaxWidth()) {
-                            Button(
-                                onClick = {
-                                    val isP2pConn = currentConnectionInfo.value?.groupFormed ?: false
-                                    if (isP2pConn) {
-                                        // Request chat!
-                                        activeChatPeerName.value = peer.userName
-                                        sessionManager.sendChatRequest(myNameState.value)
-                                        Toast.makeText(context, "Solicitud de chat enviada...", Toast.LENGTH_SHORT).show()
-                                    } else {
-                                        Toast.makeText(context, "Conéctate al dispositivo primero para chatear.", Toast.LENGTH_SHORT).show()
-                                    }
-                                    selectedPeerForActions = null
-                                },
-                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
-                            ) {
-                                Text("💬 Iniciar Chat")
-                            }
-                            Button(
-                                onClick = {
-                                    val isP2pConn = currentConnectionInfo.value?.groupFormed ?: false
-                                    if (isP2pConn) {
-                                        sessionManager.sendContactRequest(myNameState.value)
-                                        Toast.makeText(context, "Solicitud de intercambio de contacto enviada...", Toast.LENGTH_SHORT).show()
-                                    } else {
-                                        Toast.makeText(context, "Conéctate al dispositivo primero para intercambiar contactos.", Toast.LENGTH_SHORT).show()
-                                    }
-                                    selectedPeerForActions = null
-                                },
-                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
-                            ) {
-                                Text("📇 Intercambiar Contacto Mutuo")
-                            }
-                            Button(
-                                onClick = {
-                                    wifiP2pHelper.connectToPeer(peer)
-                                    selectedPeerForActions = null
-                                },
-                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary)
-                            ) {
-                                Text("🔗 Conectar / Enviar Archivos")
-                            }
-                        }
-                    },
-                    dismissButton = {
-                        TextButton(onClick = { selectedPeerForActions = null }) {
-                            Text("Cancelar")
-                        }
-                    }
-                )
-            }
-
-            selectedBlePeerForActions?.let { bpeer ->
-                AlertDialog(
-                    onDismissRequest = { selectedBlePeerForActions = null },
-                    title = {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            AvatarBubble(avatarIndex = bpeer.avatarIndex, size = 42.dp)
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Text(bpeer.userName)
-                        }
-                    },
-                    text = {
-                        Text(
-                            text = "Este dispositivo ha sido detectado de forma pasiva mediante búsqueda BLE. ¿Deseas intentar conectarte de forma segura?",
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                    },
-                    confirmButton = {
-                        Button(
-                            onClick = {
-                                val p2pPeer = wifiP2pHelper.findPeerByToken(bpeer.sessionToken)
-                                if (p2pPeer != null) {
-                                    wifiP2pHelper.connectToPeer(p2pPeer)
-                                } else {
-                                    Toast.makeText(context, "Buscando información de red segura...", Toast.LENGTH_SHORT).show()
-                                    wifiP2pHelper.startDiscoveryForToken(bpeer.sessionToken, bpeer.userName)
-                                }
-                                selectedBlePeerForActions = null
-                            }
-                        ) {
-                            Text("Conectar de forma segura")
-                        }
-                    },
-                    dismissButton = {
-                        TextButton(onClick = { selectedBlePeerForActions = null }) {
-                            Text("Cancelar")
-                        }
-                    }
-                )
-            }
-
-            incomingFileRequest.value?.let { request ->
-                val sizeInMb = String.format("%.2f MB", request.fileSize.toDouble() / (1024 * 1024))
-                AlertDialog(
-                    onDismissRequest = {
-                        request.onReject()
-                        incomingFileRequest.value = null
-                    },
-                    title = { Text("Confirmación de Recepción") },
-                    text = {
-                        Text(
-                            text = "¿Deseas aceptar el archivo \"${request.fileName}\" ($sizeInMb)?",
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                    },
-                    confirmButton = {
-                        Button(
-                            onClick = {
-                                request.onAccept()
-                                incomingFileRequest.value = null
-                            }
-                        ) {
-                            Text("Aceptar")
-                        }
-                    },
-                    dismissButton = {
-                        TextButton(
-                            onClick = {
-                                request.onReject()
-                                incomingFileRequest.value = null
-                            }
-                        ) {
-                            Text("Rechazar")
-                        }
-                    }
-                )
-            }
-
-            // Floating remote music player
-            if (remoteAudioPlayer.currentTrackName.value.isNotEmpty()) {
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
-                ) {
+            // Screen Sharing Control Card
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
+                        modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                            // Pulsing music note icon
-                            val infiniteTransition = rememberInfiniteTransition()
-                            val pulseScale by infiniteTransition.animateFloat(
-                                initialValue = 0.9f,
-                                targetValue = 1.15f,
-                                animationSpec = infiniteRepeatable(
-                                    animation = tween(800, easing = FastOutSlowInEasing),
-                                    repeatMode = RepeatMode.Reverse
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Compartir Pantalla Remota", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                            Text("Transmite tu pantalla en vivo a otro dispositivo.", fontSize = 12.sp, color = Color.Gray)
+                        }
+                        Switch(
+                            checked = isScreenShareEnabled.value,
+                            onCheckedChange = { isScreenShareEnabled.value = it }
+                        )
+                    }
+
+                    if (isScreenShareEnabled.value) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Button(
+                            onClick = {
+                                activeScreenShareSender.value = true
+                                sessionManager.sendScreenShareStart(
+                                    myNameState.value,
+                                    screenShareResolution.value,
+                                    screenShareFps.value,
+                                    screenShareQuality.value
                                 )
-                            )
+                                Toast.makeText(context, "Iniciando transmisión...", Toast.LENGTH_SHORT).show()
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFA855F7))
+                        ) {
+                            Text("🖥️ Transmitir Pantalla")
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Universal Browser Vault QR Code Card (Feature 1)
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text("🌐 Web Vault (AirShare sin App)", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                    Text("Escanea este QR desde cualquier iPhone/PC para transferir archivos directamente.", fontSize = 12.sp, color = Color.Gray, textAlign = TextAlign.Center)
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    val localIp = getLocalIpAddress(context)
+                    val url = "http://$localIp:8989"
+
+                    val qrBitmap = remember(url) { generateQrCodeBitmap(url) }
+                    qrBitmap?.let {
+                        Image(
+                            bitmap = it.asImageBitmap(),
+                            contentDescription = "QR Vault",
+                            modifier = Modifier.size(160.dp).clip(RoundedCornerShape(8.dp))
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(url, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, fontSize = 14.sp)
+
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Button(onClick = { toggleAirShareServer() }) {
+                        Text(if (isAirShareServerActive.value) "Detener Servidor Web" else "Iniciar Servidor Web")
+                    }
+                }
+            }
+        }
+    }
+
+    // --- TAB 4: Ajustes & Perfil ---
+    @Composable
+    fun SettingsTabScreen() {
+        val context = LocalContext.current
+        var nameInput by remember { mutableStateOf(myNameState.value) }
+        var phoneInput by remember { mutableStateOf(myPhoneState.value) }
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp)
+                .verticalScroll(rememberScrollState())
+        ) {
+            Text(
+                text = "Ajustes y Perfil",
+                style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(bottom = 12.dp)
+            )
+
+            // Identity Profile Card
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("Tu Identidad Persistente", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                    Text("ID Unico: ${myDeviceIdState.value}", fontSize = 11.sp, color = Color.Gray)
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    OutlinedTextField(
+                        value = nameInput,
+                        onValueChange = {
+                            nameInput = it
+                            myNameState.value = it
+                            dbHelper.saveProfile(it, myPhoneState.value, myAvatarState.value, myDeviceIdState.value)
+                        },
+                        label = { Text("Nombre para mostrar") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    OutlinedTextField(
+                        value = phoneInput,
+                        onValueChange = {
+                            phoneInput = it
+                            myPhoneState.value = it
+                            dbHelper.saveProfile(myNameState.value, it, myAvatarState.value, myDeviceIdState.value)
+                        },
+                        label = { Text("Teléfono") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text("Avatar:", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        AVATAR_DESIGNS.forEachIndexed { idx, design ->
+                            val isSelected = myAvatarState.value == idx
                             Box(
                                 modifier = Modifier
-                                    .size(40.dp)
-                                    .scale(if (remoteAudioPlayer.isPlaying.value) pulseScale else 1f)
+                                    .size(36.dp)
                                     .clip(CircleShape)
-                                    .background(MaterialTheme.colorScheme.primary),
+                                    .background(Brush.linearGradient(design.bgGradients))
+                                    .border(if (isSelected) 3.dp else 0.dp, MaterialTheme.colorScheme.primary, CircleShape)
+                                    .clickable {
+                                        myAvatarState.value = idx
+                                        dbHelper.saveProfile(myNameState.value, myPhoneState.value, idx, myDeviceIdState.value)
+                                    },
                                 contentAlignment = Alignment.Center
                             ) {
-                                Text("🎵", fontSize = 20.sp)
-                            }
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Column {
-                                Text(
-                                    text = "Reproduciendo Audio Remoto",
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 11.sp,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                                Text(
-                                    text = remoteAudioPlayer.currentTrackName.value,
-                                    fontWeight = FontWeight.SemiBold,
-                                    fontSize = 13.sp,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                    maxLines = 1
-                                )
-                            }
-                        }
-
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            IconButton(onClick = { remoteAudioPlayer.togglePlayPause() }) {
-                                Text(if (remoteAudioPlayer.isPlaying.value) "⏸" else "▶", fontSize = 18.sp)
-                            }
-                            IconButton(onClick = { remoteAudioPlayer.stop() }) {
-                                Text("⏹", fontSize = 18.sp)
+                                Text(design.emoji, fontSize = 18.sp)
                             }
                         }
                     }
                 }
             }
 
-            // Screen Sharing Sender Overlay
-            if (activeScreenShareSender.value) {
-                AlertDialog(
-                    onDismissRequest = {},
-                    title = {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            val infiniteTransition = rememberInfiniteTransition()
-                            val pulseAlpha by infiniteTransition.animateFloat(
-                                initialValue = 0.3f,
-                                targetValue = 1f,
-                                animationSpec = infiniteRepeatable(
-                                    animation = tween(1000, easing = LinearEasing),
-                                    repeatMode = RepeatMode.Reverse
-                                )
-                            )
-                            Box(
-                                modifier = Modifier
-                                    .size(14.dp)
-                                    .clip(CircleShape)
-                                    .background(Color.Red.copy(alpha = pulseAlpha))
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Compartiendo Pantalla", fontWeight = FontWeight.Bold)
-                        }
-                    },
-                    text = {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-                            Text(
-                                text = "Tu pantalla se está transmitiendo en tiempo real al dispositivo conectado.",
-                                textAlign = TextAlign.Center,
-                                style = MaterialTheme.typography.bodyMedium
-                            )
-                            Spacer(modifier = Modifier.height(16.dp))
-                            Card(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(120.dp),
-                                colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.05f))
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Dynamic Theme Customizer Card (Feature 2)
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("Personalización de Tema iOS", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        THEME_PRESETS.forEachIndexed { idx, theme ->
+                            Button(
+                                onClick = {
+                                    currentThemeIndex.value = idx
+                                    HapticManager.performLightClick(context)
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = theme.primary),
+                                modifier = Modifier.weight(1f).padding(horizontal = 2.dp)
                             ) {
-                                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                        Text("🖥️ ✨ 📱", fontSize = 28.sp)
-                                        Spacer(modifier = Modifier.height(8.dp))
-                                        Text(
-                                            text = "${screenShareResolution.value} • ${screenShareFps.value} FPS • Calidad ${screenShareQuality.value}",
-                                            fontSize = 11.sp,
-                                            color = Color.Gray,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                    }
-                                }
+                                Text(theme.name.take(4), fontSize = 10.sp, color = Color.White)
                             }
                         }
-                    },
-                    confirmButton = {
-                        Button(
-                            onClick = {
-                                activeScreenShareSender.value = false
-                                sessionManager.sendScreenShareStop()
-                                Toast.makeText(context, "Transmisión detenida.", Toast.LENGTH_SHORT).show()
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-                        ) {
-                            Text("Detener Transmisión")
-                        }
                     }
-                )
+                }
             }
 
-            // Screen Sharing Receiver Overlay
-            activeScreenShareReceiver.value?.let { session ->
-                AlertDialog(
-                    onDismissRequest = {},
-                    title = {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(
-                                modifier = Modifier
-                                    .size(12.dp)
-                                    .clip(CircleShape)
-                                    .background(Color(0xFF10B981))
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Pantalla de ${session.peerName}", fontWeight = FontWeight.Bold)
-                        }
-                    },
-                    text = {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-                            Text(
-                                text = "Recibiendo transmisión de pantalla.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = Color.Gray
-                            )
-                            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(16.dp))
 
-                            // High fidelity simulated screen preview mockup!
-                            Card(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(180.dp),
-                                border = androidx.compose.foundation.BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)),
-                                colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A))
-                            ) {
-                                Box(modifier = Modifier.fillMaxSize().padding(12.dp)) {
-                                    Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.SpaceBetween) {
-                                        // Header of cast mockup
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Text("Conexion Cast", color = Color.White.copy(alpha = 0.7f), fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                                            Text("12:00", color = Color.White.copy(alpha = 0.7f), fontSize = 10.sp)
-                                        }
-
-                                        // Pulse effect on mockup screen
-                                        Column(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalAlignment = Alignment.CenterHorizontally
-                                        ) {
-                                            val infiniteTransition = rememberInfiniteTransition()
-                                            val scale by infiniteTransition.animateFloat(
-                                                initialValue = 0.95f,
-                                                targetValue = 1.05f,
-                                                animationSpec = infiniteRepeatable(
-                                                    animation = tween(1200, easing = EaseInOutSine),
-                                                    repeatMode = RepeatMode.Reverse
-                                                )
-                                            )
-                                            Box(
-                                                modifier = Modifier
-                                                    .scale(scale)
-                                                    .size(54.dp)
-                                                    .clip(CircleShape)
-                                                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)),
-                                                contentAlignment = Alignment.Center
-                                            ) {
-                                                Text("📱", fontSize = 28.sp)
-                                            }
-                                            Spacer(modifier = Modifier.height(8.dp))
-                                            Text(
-                                                text = "Simulando pantalla remota...",
-                                                color = Color.White.copy(alpha = 0.5f),
-                                                fontSize = 9.sp
-                                            )
-                                        }
-
-                                        // Footer specs
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween
-                                        ) {
-                                            Text(
-                                                text = "Res: ${session.resolution}",
-                                                color = Color.White.copy(alpha = 0.4f),
-                                                fontSize = 9.sp
-                                            )
-                                            Text(
-                                                text = "FPS: ${session.fps}",
-                                                color = Color.White.copy(alpha = 0.4f),
-                                                fontSize = 9.sp
-                                            )
-                                            Text(
-                                                text = "Calidad: ${session.quality}",
-                                                color = Color.White.copy(alpha = 0.4f),
-                                                fontSize = 9.sp
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    confirmButton = {
-                        Button(
-                            onClick = {
-                                activeScreenShareReceiver.value = null
-                                sessionManager.sendScreenShareStop()
-                                Toast.makeText(context, "Transmisión detenida.", Toast.LENGTH_SHORT).show()
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-                        ) {
-                            Text("Cerrar")
-                        }
+            // Background Discovery Toggle
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Row(
+                    modifier = Modifier.padding(16.dp).fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Búsqueda BLE en Segundo Plano", fontWeight = FontWeight.Bold)
+                        Text("Permite detectar dispositivos con pantalla apagada.", fontSize = 11.sp, color = Color.Gray)
                     }
-                )
+                    Switch(
+                        checked = isBgDiscoveryEnabled.value,
+                        onCheckedChange = { isEnabled ->
+                            isBgDiscoveryEnabled.value = isEnabled
+                            getSharedPreferences("conexion_prefs", Context.MODE_PRIVATE).edit().putBoolean("bg_discovery_enabled", isEnabled).apply()
+                            if (isEnabled) startBgDiscoveryService() else stopBgDiscoveryService()
+                        }
+                    )
+                }
             }
         }
     }

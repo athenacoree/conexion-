@@ -15,6 +15,7 @@ import java.net.Socket
 
 class FileTransferManager(
     private val context: Context,
+    private val dbHelper: DatabaseHelper,
     private val onIncomingFileRequest: (fileName: String, fileSize: Long, onAccept: () -> Unit, onReject: () -> Unit) -> Unit,
     private val onError: (String) -> Unit,
     private val onProgress: (fileName: String, bytesTransferred: Long, totalBytes: Long, isCompleted: Boolean) -> Unit
@@ -71,7 +72,7 @@ class FileTransferManager(
     }
 
     /**
-     * Handles receiving a file over a client socket connections.
+     * Handles receiving a file over a client socket connection.
      */
     private suspend fun handleIncomingTransfer(socket: Socket) = withContext(Dispatchers.IO) {
         try {
@@ -105,6 +106,7 @@ class FileTransferManager(
             val isAccepted = confirmationDeferred.await()
             if (!isAccepted) {
                 Log.d(tag, "Incoming file rejected by user: $fileName")
+                dbHelper.saveTransferRecord(fileName, fileSize, "Remoto", true, "Rechazado")
                 onError("Transferencia rechazada: $fileName")
                 socket.close()
                 return@withContext
@@ -114,6 +116,7 @@ class FileTransferManager(
             val outputStream = createDownloadOutputStream(fileName)
             if (outputStream == null) {
                 Log.e(tag, "Failed to create output stream for received file")
+                dbHelper.saveTransferRecord(fileName, fileSize, "Remoto", true, "Error al guardar")
                 onError("Fallo al crear el archivo en Descargas. Verifica el espacio o permisos.")
                 socket.close()
                 return@withContext
@@ -124,7 +127,6 @@ class FileTransferManager(
             var totalBytesRead = 0L
 
             if (fileSize == -1L) {
-                // If fileSize is -1L, read until EOF (bytesRead == -1) as requested by TAREA 7
                 while (dataInputStream.read(buffer).also { bytesRead = it } != -1) {
                     outputStream.write(buffer, 0, bytesRead)
                     totalBytesRead += bytesRead.toLong()
@@ -148,6 +150,7 @@ class FileTransferManager(
             socket.close()
 
             Log.d(tag, "File received successfully: $fileName")
+            dbHelper.saveTransferRecord(fileName, totalBytesRead, "Remoto", true, "Completado")
             onProgress(fileName, fileSize, fileSize, true)
 
             val savedUri = lastReceivedFileUri
@@ -167,7 +170,7 @@ class FileTransferManager(
     /**
      * Sends a file to the host specified by hostAddress.
      */
-    suspend fun sendFile(hostAddress: String, fileUri: Uri, playRemoteAudio: Boolean = false): Boolean = withContext(Dispatchers.IO) {
+    suspend fun sendFile(hostAddress: String, fileUri: Uri, playRemoteAudio: Boolean = false, peerName: String = "Remoto"): Boolean = withContext(Dispatchers.IO) {
         var socket: Socket? = null
         var attempts = 0
         val maxAttempts = 5
@@ -184,6 +187,7 @@ class FileTransferManager(
                 if (attempts < maxAttempts) {
                     kotlinx.coroutines.delay(1000)
                 } else {
+                    dbHelper.saveTransferRecord(getFileNameFromUri(fileUri) ?: "archivo", getFileSizeFromUri(fileUri), peerName, false, "Fallo de conexión")
                     onError("No se pudo establecer conexión de red con el destinatario después de $maxAttempts intentos.")
                     return@withContext false
                 }
@@ -196,6 +200,7 @@ class FileTransferManager(
 
             // Resolve file name and size from Uri
             var fileName = getFileNameFromUri(fileUri) ?: "archivo_enviado.dat"
+            val displayFileName = fileName
             if (playRemoteAudio) {
                 fileName = "PLAY_REMOTE_AUDIO_" + fileName
                 Log.d(tag, "Prepend PLAY_REMOTE_AUDIO_ prefix to filename: $fileName")
@@ -209,6 +214,7 @@ class FileTransferManager(
             val inputStream = context.contentResolver.openInputStream(fileUri)
             if (inputStream == null) {
                 Log.e(tag, "Could not open InputStream for Uri: $fileUri")
+                dbHelper.saveTransferRecord(displayFileName, fileSize, peerName, false, "Error de lectura")
                 onError("No se pudo abrir el archivo seleccionado.")
                 socket.close()
                 return@withContext false
@@ -221,7 +227,7 @@ class FileTransferManager(
             while (inputStream.read(buffer).also { bytesRead = it } != -1) {
                 dataOutputStream.write(buffer, 0, bytesRead)
                 totalBytesSent += bytesRead.toLong()
-                onProgress(fileName, totalBytesSent, fileSize, false)
+                onProgress(displayFileName, totalBytesSent, fileSize, false)
             }
 
             dataOutputStream.flush()
@@ -229,7 +235,8 @@ class FileTransferManager(
             socket.close()
 
             Log.d(tag, "File sent successfully: $fileName")
-            onProgress(fileName, fileSize, fileSize, true)
+            dbHelper.saveTransferRecord(displayFileName, fileSize, peerName, false, "Completado")
+            onProgress(displayFileName, fileSize, fileSize, true)
             true
         } catch (e: Exception) {
             Log.e(tag, "Error sending file", e)

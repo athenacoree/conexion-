@@ -147,6 +147,7 @@ class BackgroundDiscoveryService : Service() {
 
         fileTransferManager = FileTransferManager(
             context = this,
+            dbHelper = dbHelper,
             onIncomingFileRequest = { fileName, fileSize, onAccept, onReject ->
                 Log.d(tag, "Background incoming file request: $fileName ($fileSize bytes)")
                 onAccept()
@@ -170,6 +171,7 @@ class BackgroundDiscoveryService : Service() {
                 Log.d(tag, "Beacon decoded token: $token")
                 val name = recentlyDetectedPeerNames[token] ?: "Dispositivo ultrasónico"
 
+                HapticManager.performIPhoneHaptic(this)
                 showConnectionNotification(name, token)
 
                 val intent = Intent(ACTION_BEACON_TOKEN_DECODED).apply {
@@ -503,6 +505,8 @@ class BackgroundDiscoveryService : Service() {
                 if (now - lastNotified > 10_000) {
                     recentlyNotifiedPeers[peer.sessionToken] = now
                     Log.d(tag, "PEER SENDING DETECTED: ${peer.userName} (${peer.sessionToken})")
+
+                    HapticManager.performIPhoneHaptic(this)
 
                     if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
                         Log.d(tag, "RECORD_AUDIO permission granted. Starting AudioBeaconListener for token: ${peer.sessionToken}")

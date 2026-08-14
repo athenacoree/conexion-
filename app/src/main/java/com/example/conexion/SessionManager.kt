@@ -9,11 +9,13 @@ import java.net.ServerSocket
 import java.net.Socket
 
 class SessionManager(
-    private val onMessageReceived: (String) -> Unit,
-    private val onChatRequestReceived: (String, (Boolean) -> Unit) -> Unit,
-    private val onChatRequestResponse: (Boolean) -> Unit,
-    private val onContactRequestReceived: (String, (Boolean) -> Unit) -> Unit,
-    private val onContactRequestResponse: (Boolean) -> Unit,
+    private val dbHelper: DatabaseHelper,
+    private val myDeviceId: String,
+    private val onMessageReceived: (DbChatMessage) -> Unit,
+    private val onChatRequestReceived: (peerDeviceId: String, peerName: String, decisionCallback: (Boolean) -> Unit) -> Unit,
+    private val onChatRequestResponse: (accepted: Boolean, peerDeviceId: String) -> Unit,
+    private val onContactRequestReceived: (peerDeviceId: String, peerName: String, decisionCallback: (Boolean) -> Unit) -> Unit,
+    private val onContactRequestResponse: (accepted: Boolean) -> Unit,
     private val onContactDataReceived: (name: String, phone: String) -> Unit,
     private val onError: (String) -> Unit
 ) {
@@ -27,6 +29,10 @@ class SessionManager(
 
     private var outWriter: PrintWriter? = null
 
+    // Connected peer's device ID
+    var activePeerDeviceId: String = ""
+    var activePeerName: String = ""
+
     // Screen sharing callbacks
     var onScreenShareStarted: ((peerName: String, resolution: String, fps: Int, quality: String) -> Unit)? = null
     var onScreenShareStopped: (() -> Unit)? = null
@@ -34,7 +40,6 @@ class SessionManager(
     fun startServer() {
         if (isRunning) return
         isRunning = true
-        // Recreate CoroutineScope if previous was cancelled
         if (!scope.isActive) {
             scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
         }
@@ -58,7 +63,6 @@ class SessionManager(
     fun connectToHost(hostAddress: String) {
         if (isRunning) return
         isRunning = true
-        // Recreate CoroutineScope if previous was cancelled
         if (!scope.isActive) {
             scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
         }
@@ -89,6 +93,9 @@ class SessionManager(
             outWriter = PrintWriter(socket.getOutputStream(), true)
             val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
 
+            // Immediately identify ourselves to the connected peer
+            sendRaw("IDENTIFY|$myDeviceId")
+
             while (isRunning) {
                 val line = reader.readLine() ?: break
                 Log.d(tag, "Control payload received: $line")
@@ -102,11 +109,18 @@ class SessionManager(
     }
 
     private fun parseControlMessage(message: String) {
-        val parts = message.split("|", limit = 3)
+        val parts = message.split("|", limit = 4)
         if (parts.isEmpty()) return
         val cmd = parts[0]
 
         when (cmd) {
+            "IDENTIFY" -> {
+                val peerId = parts.getOrNull(1) ?: ""
+                if (peerId.isNotEmpty()) {
+                    activePeerDeviceId = peerId
+                    Log.d(tag, "Peer identified with persistent deviceId: $peerId")
+                }
+            }
             "SCREEN_SHARE_START" -> {
                 val subparts = message.split("|")
                 val rName = subparts.getOrNull(1) ?: "Dispositivo"
@@ -123,35 +137,56 @@ class SessionManager(
                 }
             }
             "CHAT_REQ" -> {
-                val peerName = parts.getOrNull(1) ?: "Dispositivo"
+                val peerId = parts.getOrNull(1) ?: ""
+                val peerName = parts.getOrNull(2) ?: "Dispositivo"
+                if (peerId.isNotEmpty()) activePeerDeviceId = peerId
+                activePeerName = peerName
+
                 scope.launch(Dispatchers.Main) {
-                    onChatRequestReceived(peerName) { accepted ->
-                        sendRaw("CHAT_RESP|${if (accepted) "ACCEPT" else "REJECT"}")
+                    onChatRequestReceived(activePeerDeviceId, peerName) { accepted ->
+                        sendRaw("CHAT_RESP|$myDeviceId|${if (accepted) "ACCEPT" else "REJECT"}")
                     }
                 }
             }
             "CHAT_RESP" -> {
-                val status = parts.getOrNull(1) ?: "REJECT"
+                val peerId = parts.getOrNull(1) ?: ""
+                val status = parts.getOrNull(2) ?: "REJECT"
+                if (peerId.isNotEmpty()) activePeerDeviceId = peerId
+
                 scope.launch(Dispatchers.Main) {
-                    onChatRequestResponse(status == "ACCEPT")
+                    onChatRequestResponse(status == "ACCEPT", activePeerDeviceId)
                 }
             }
             "CHAT_MSG" -> {
-                val text = parts.getOrNull(1) ?: ""
+                val senderPeerId = parts.getOrNull(1) ?: activePeerDeviceId.ifEmpty { "unknown_peer" }
+                val senderName = parts.getOrNull(2) ?: activePeerName.ifEmpty { "Dispositivo" }
+                val text = parts.getOrNull(3) ?: ""
+
+                // Persist incoming chat message to database!
+                val chatMsg = dbHelper.saveChatMessage(
+                    peerDeviceId = senderPeerId,
+                    senderName = senderName,
+                    message = text,
+                    isMe = false
+                )
+
                 scope.launch(Dispatchers.Main) {
-                    onMessageReceived(text)
+                    onMessageReceived(chatMsg)
                 }
             }
             "CONTACT_REQ" -> {
-                val peerName = parts.getOrNull(1) ?: "Dispositivo"
+                val peerId = parts.getOrNull(1) ?: ""
+                val peerName = parts.getOrNull(2) ?: "Dispositivo"
+                if (peerId.isNotEmpty()) activePeerDeviceId = peerId
+
                 scope.launch(Dispatchers.Main) {
-                    onContactRequestReceived(peerName) { accepted ->
-                        sendRaw("CONTACT_RESP|${if (accepted) "ACCEPT" else "REJECT"}")
+                    onContactRequestReceived(activePeerDeviceId, peerName) { accepted ->
+                        sendRaw("CONTACT_RESP|$myDeviceId|${if (accepted) "ACCEPT" else "REJECT"}")
                     }
                 }
             }
             "CONTACT_RESP" -> {
-                val status = parts.getOrNull(1) ?: "REJECT"
+                val status = parts.getOrNull(2) ?: parts.getOrNull(1) ?: "REJECT"
                 scope.launch(Dispatchers.Main) {
                     onContactRequestResponse(status == "ACCEPT")
                 }
@@ -167,15 +202,23 @@ class SessionManager(
     }
 
     fun sendChatRequest(myName: String) {
-        sendRaw("CHAT_REQ|$myName")
+        sendRaw("CHAT_REQ|$myDeviceId|$myName")
     }
 
-    fun sendChatMessage(text: String) {
-        sendRaw("CHAT_MSG|$text")
+    fun sendChatMessage(text: String, myName: String, peerDeviceId: String): DbChatMessage {
+        val targetPeerId = if (peerDeviceId.isNotEmpty()) peerDeviceId else activePeerDeviceId.ifEmpty { "unknown_peer" }
+        val chatMsg = dbHelper.saveChatMessage(
+            peerDeviceId = targetPeerId,
+            senderName = myName,
+            message = text,
+            isMe = true
+        )
+        sendRaw("CHAT_MSG|$myDeviceId|$myName|$text")
+        return chatMsg
     }
 
     fun sendContactRequest(myName: String) {
-        sendRaw("CONTACT_REQ|$myName")
+        sendRaw("CONTACT_REQ|$myDeviceId|$myName")
     }
 
     fun sendContactData(name: String, phone: String) {
