@@ -41,6 +41,9 @@ class BackgroundDiscoveryService : Service() {
         const val ACTION_PEER_SENDING = "com.example.conexion.ACTION_PEER_SENDING"
         const val ACTION_BEACON_TOKEN_DECODED = "com.example.conexion.ACTION_BEACON_TOKEN_DECODED"
 
+        const val ACTION_STREAM_ACCEPT = "com.example.conexion.ACTION_STREAM_ACCEPT"
+        const val ACTION_STREAM_REJECT = "com.example.conexion.ACTION_STREAM_REJECT"
+
         const val EXTRA_USER_NAME = "EXTRA_USER_NAME"
         const val EXTRA_WIFI_MAC = "EXTRA_WIFI_MAC"
         const val EXTRA_PEER_NAME = "EXTRA_PEER_NAME"
@@ -71,6 +74,16 @@ class BackgroundDiscoveryService : Service() {
 
     // Tracks peers to avoid showing duplicate notifications in a short window
     private val recentlyNotifiedPeers = mutableMapOf<String, Long>()
+    private val lastProximityVibrations = mutableMapOf<String, Long>()
+
+    private fun checkProximityHaptic(sessionToken: String) {
+        val now = System.currentTimeMillis()
+        val last = lastProximityVibrations[sessionToken] ?: 0L
+        if (now - last > 3000) {
+            lastProximityVibrations[sessionToken] = now
+            HapticManager.performProximityHaptic(this)
+        }
+    }
 
     private var audioBeaconListener: AudioBeaconListener? = null
     private val recentlyDetectedPeerNames = mutableMapOf<String, String>()
@@ -197,6 +210,8 @@ class BackgroundDiscoveryService : Service() {
         val filter = IntentFilter().apply {
             addAction("com.example.conexion.ACTION_NOTIFICATION_ACCEPT")
             addAction("com.example.conexion.ACTION_NOTIFICATION_REJECT")
+            addAction(ACTION_STREAM_ACCEPT)
+            addAction(ACTION_STREAM_REJECT)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(serviceReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
@@ -439,7 +454,13 @@ class BackgroundDiscoveryService : Service() {
             val record = result.scanRecord ?: return
             val rawData = record.getManufacturerSpecificData(MANUFACTURER_ID) ?: return
 
-            val peer = parseManufacturerData(rawData) ?: return
+            val rssi = result.rssi
+            val distance = Math.pow(10.0, (-59.0 - rssi) / (10.0 * 2.0))
+
+            val peer = parseManufacturerData(rawData, rssi, distance) ?: return
+            if (distance <= 0.25 || rssi >= -50) {
+                checkProximityHaptic(peer.sessionToken)
+            }
             handleDiscoveredPeer(peer)
         }
 
@@ -448,7 +469,14 @@ class BackgroundDiscoveryService : Service() {
             results?.forEach { result ->
                 val record = result.scanRecord ?: return@forEach
                 val rawData = record.getManufacturerSpecificData(MANUFACTURER_ID) ?: return@forEach
-                val peer = parseManufacturerData(rawData) ?: return@forEach
+
+                val rssi = result.rssi
+                val distance = Math.pow(10.0, (-59.0 - rssi) / (10.0 * 2.0))
+
+                val peer = parseManufacturerData(rawData, rssi, distance) ?: return@forEach
+                if (distance <= 0.25 || rssi >= -50) {
+                    checkProximityHaptic(peer.sessionToken)
+                }
                 handleDiscoveredPeer(peer)
             }
         }
@@ -557,6 +585,43 @@ class BackgroundDiscoveryService : Service() {
         manager.notify(MATCH_NOTIFICATION_ID, notification)
     }
 
+    fun showStreamConfirmationNotification(peerName: String, streamType: String) {
+        val acceptIntent = Intent(ACTION_STREAM_ACCEPT).apply {
+            putExtra("EXTRA_STREAM_TYPE", streamType)
+            setPackage(packageName)
+        }
+        val acceptPendingIntent = PendingIntent.getBroadcast(
+            this, 201, acceptIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val rejectIntent = Intent(ACTION_STREAM_REJECT).apply {
+            putExtra("EXTRA_STREAM_TYPE", streamType)
+            setPackage(packageName)
+        }
+        val rejectPendingIntent = PendingIntent.getBroadcast(
+            this, 202, rejectIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val title = if (streamType == "SCREEN") "Transmisión de Pantalla Solicitada" else "Transmisión de Audio Solicitada"
+        val body = "$peerName quiere compartir ${if (streamType == "SCREEN") "su pantalla" else "su audio"} en vivo contigo."
+
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle(title)
+            .setContentText(body)
+            .setSmallIcon(android.R.drawable.ic_menu_camera)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .addAction(android.R.drawable.ic_menu_add, "ACEPTAR", acceptPendingIntent)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "RECHAZAR", rejectPendingIntent)
+            .setAutoCancel(true)
+            .build()
+
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.notify(1003, notification)
+    }
+
     private fun showConnectionNotification(userName: String, token: String) {
         val acceptIntent = Intent("com.example.conexion.ACTION_NOTIFICATION_ACCEPT").apply {
             putExtra(EXTRA_PEER_TOKEN, token)
@@ -655,7 +720,7 @@ class BackgroundDiscoveryService : Service() {
         return stream.toByteArray()
     }
 
-    private fun parseManufacturerData(data: ByteArray): BlePeer? {
+    private fun parseManufacturerData(data: ByteArray, rssi: Int = -60, distanceMeters: Double = 1.0): BlePeer? {
         if (data.size < 8) return null
         return try {
             val buffer = ByteBuffer.wrap(data)
@@ -675,7 +740,9 @@ class BackgroundDiscoveryService : Service() {
                 userName = if (userName.isEmpty()) "Usuario BLE" else userName,
                 sessionToken = sessionToken,
                 state = state,
-                avatarIndex = avatarIndex
+                avatarIndex = avatarIndex,
+                rssi = rssi,
+                distanceMeters = distanceMeters
             )
         } catch (e: Exception) {
             Log.e(tag, "Failed to parse manufacturer data", e)
@@ -687,6 +754,15 @@ class BackgroundDiscoveryService : Service() {
         val userName: String,
         val sessionToken: String,
         val state: Int,
-        val avatarIndex: Int = 0
-    )
+        val avatarIndex: Int = 0,
+        val rssi: Int = -60,
+        val distanceMeters: Double = 1.0
+    ) {
+        val formattedDistance: String
+            get() = if (distanceMeters < 1.0) {
+                "${(distanceMeters * 100).toInt()} cm"
+            } else {
+                String.format(java.util.Locale.US, "%.1f m", distanceMeters)
+            }
+    }
 }

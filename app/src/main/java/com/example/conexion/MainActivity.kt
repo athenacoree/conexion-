@@ -73,6 +73,44 @@ class MainActivity : ComponentActivity() {
     private lateinit var fileTransferManager: FileTransferManager
     private lateinit var sessionManager: SessionManager
     private lateinit var dbHelper: DatabaseHelper
+    private lateinit var streamManager: StreamManager
+
+    // Live Streaming State
+    private var liveScreenFrameBitmap = mutableStateOf<Bitmap?>(null)
+    private var isReceivingScreenStream = mutableStateOf(false)
+    private var isReceivingAudioStream = mutableStateOf(false)
+    private var isSendingScreenStream = mutableStateOf(false)
+    private var isSendingAudioStream = mutableStateOf(false)
+    private var streamConfirmationPrompt = mutableStateOf<StreamPrompt?>(null)
+
+    data class StreamPrompt(
+        val streamType: String,
+        val peerDeviceId: String,
+        val peerName: String,
+        val onDecision: (Boolean) -> Unit
+    )
+
+    private val mediaProjectionLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == RESULT_OK && result.data != null) {
+            val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
+            val projection = projectionManager.getMediaProjection(result.resultCode, result.data!!)
+            if (projection != null) {
+                val info = currentConnectionInfo.value
+                val hostAddress = if (info?.isGroupOwner == true) {
+                    fileTransferManager.lastClientIpAddress ?: "192.168.49.2"
+                } else {
+                    info?.groupOwnerAddress?.hostAddress ?: "192.168.49.1"
+                }
+                streamManager.startScreenSender(projection, hostAddress)
+                Toast.makeText(this, "Transmisión de pantalla en vivo iniciada", Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            Toast.makeText(this, "Permiso de captura denegado", Toast.LENGTH_SHORT).show()
+            isSendingScreenStream.value = false
+        }
+    }
 
     private var audioBeaconEmitter: AudioBeaconEmitter? = null
 
@@ -107,11 +145,14 @@ class MainActivity : ComponentActivity() {
     private var currentConnectionInfo = mutableStateOf<WifiP2pInfo?>(null)
     private var connectionPromptPeer = mutableStateOf<PeerInfo?>(null)
 
-    // Progress updates
+    // Progress updates & Bandwidth Monitor
     private var transferFileName = mutableStateOf("")
     private var transferProgress = mutableStateOf(0f)
+    private var transferSpeedState = mutableStateOf("0.0 MB/s")
+    private var transferEtaState = mutableStateOf("Calculando...")
     private var isTransferring = mutableStateOf(false)
     private var isTransferCompleted = mutableStateOf(false)
+    private var transferStartTime = 0L
 
     // Chat UI state
     private var chatMessages = mutableStateListOf<DbChatMessage>()
@@ -280,10 +321,23 @@ class MainActivity : ComponentActivity() {
                 }
             },
             onProgress = { fileName, bytes, total, completed ->
+                if (transferFileName.value != fileName || !isTransferring.value) {
+                    transferFileName.value = fileName
+                    transferStartTime = System.currentTimeMillis()
+                }
+                val elapsed = Math.max(0.1, (System.currentTimeMillis() - transferStartTime) / 1000.0)
+                val speedMBs = (bytes / (1024.0 * 1024.0)) / elapsed
+                val remainingBytes = Math.max(0L, total - bytes)
+                val bytesPerSec = bytes / elapsed
+                val etaSec = if (bytesPerSec > 0) (remainingBytes / bytesPerSec).toLong() else 0L
+
                 transferFileName.value = fileName
                 isTransferring.value = !completed
                 isTransferCompleted.value = completed
                 transferProgress.value = if (total > 0) bytes.toFloat() / total else 0f
+                transferSpeedState.value = String.format(Locale.US, "%.1f MB/s", speedMBs)
+                transferEtaState.value = if (completed) "Completado" else "ETA: ${etaSec}s"
+
                 if (completed) {
                     HapticManager.performIPhoneHaptic(this)
                     runOnUiThread {
@@ -296,6 +350,80 @@ class MainActivity : ComponentActivity() {
         fileTransferManager.onAudioPlayRequested = { uri, fileName ->
             remoteAudioPlayer.play(uri, fileName)
             Toast.makeText(this, "Reproduciendo audio remoto: $fileName", Toast.LENGTH_LONG).show()
+        }
+
+        streamManager = StreamManager(this)
+        streamManager.onFrameReceived = { bitmap ->
+            liveScreenFrameBitmap.value = bitmap
+            isReceivingScreenStream.value = true
+        }
+
+        sessionManager.onStreamRequestReceived = { type, peerId, peerName, decisionCallback ->
+            streamConfirmationPrompt.value = StreamPrompt(type, peerId, peerName) { accepted ->
+                decisionCallback(accepted)
+                if (accepted) {
+                    val info = currentConnectionInfo.value
+                    val hostAddress = if (info?.isGroupOwner == true) {
+                        fileTransferManager.lastClientIpAddress ?: "192.168.49.2"
+                    } else {
+                        info?.groupOwnerAddress?.hostAddress ?: "192.168.49.1"
+                    }
+                    if (type == "SCREEN") {
+                        isReceivingScreenStream.value = true
+                        streamManager.startScreenServer()
+                    } else {
+                        isReceivingAudioStream.value = true
+                        streamManager.startAudioServer()
+                    }
+                }
+            }
+        }
+
+        sessionManager.onStreamRequestResponse = { type, accepted ->
+            if (accepted) {
+                val info = currentConnectionInfo.value
+                val hostAddress = if (info?.isGroupOwner == true) {
+                    fileTransferManager.lastClientIpAddress ?: "192.168.49.2"
+                } else {
+                    info?.groupOwnerAddress?.hostAddress ?: "192.168.49.1"
+                }
+                if (type == "SCREEN") {
+                    isSendingScreenStream.value = true
+                    val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
+                    mediaProjectionLauncher.launch(projectionManager.createScreenCaptureIntent())
+                } else {
+                    isSendingAudioStream.value = true
+                    streamManager.startAudioClient(hostAddress)
+                    Toast.makeText(this, "Transmisión de audio iniciada", Toast.LENGTH_SHORT).show()
+                }
+            } else {
+                Toast.makeText(this, "El usuario rechazó la solicitud de transmisión.", Toast.LENGTH_LONG).show()
+            }
+        }
+
+        sessionManager.onStreamStopped = { type ->
+            if (type == "SCREEN") {
+                isReceivingScreenStream.value = false
+                isSendingScreenStream.value = false
+                streamManager.stopScreenStream()
+            } else {
+                isReceivingAudioStream.value = false
+                isSendingAudioStream.value = false
+                streamManager.stopAudioStream()
+            }
+            Toast.makeText(this, "Transmisión $type finalizada", Toast.LENGTH_SHORT).show()
+        }
+
+        sessionManager.onClipboardDataReceived = { clipText ->
+            try {
+                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                val clip = android.content.ClipData.newPlainText("ConexionClip", clipText)
+                clipboard.setPrimaryClip(clip)
+                HapticManager.performIPhoneHaptic(this)
+                Toast.makeText(this, "📋 Portapapeles recibido y copiado: $clipText", Toast.LENGTH_LONG).show()
+            } catch (e: Exception) {
+                Log.e(tag, "Failed to copy to clipboard", e)
+            }
         }
 
         sessionManager.onScreenShareStarted = { peerName, resolution, fps, quality ->
@@ -810,7 +938,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // Modern Sonar Radar
+    // Modern AirDrop Radar
     @Composable
     fun ModernSonarRadar(
         myAvatarIndex: Int,
@@ -823,112 +951,121 @@ class MainActivity : ComponentActivity() {
         val context = LocalContext.current
         val infiniteTransition = rememberInfiniteTransition()
 
-        val ripple1 = infiniteTransition.animateFloat(
-            initialValue = 0f,
-            targetValue = 1f,
+        val pulse1 = infiniteTransition.animateFloat(
+            initialValue = 0.8f,
+            targetValue = 2.2f,
             animationSpec = infiniteRepeatable(
-                animation = tween(4000, easing = LinearEasing),
+                animation = tween(3500, easing = FastOutSlowInEasing),
                 repeatMode = RepeatMode.Restart
             )
         )
-        val ripple2 = infiniteTransition.animateFloat(
-            initialValue = 0f,
-            targetValue = 1f,
+        val alpha1 = infiniteTransition.animateFloat(
+            initialValue = 0.35f,
+            targetValue = 0f,
             animationSpec = infiniteRepeatable(
-                animation = tween(4000, easing = LinearEasing),
-                repeatMode = RepeatMode.Restart,
-                initialStartOffset = StartOffset(2000)
-            )
-        )
-        val sweepAngle = infiniteTransition.animateFloat(
-            initialValue = 0f,
-            targetValue = 360f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(3000, easing = LinearEasing),
+                animation = tween(3500, easing = FastOutSlowInEasing),
                 repeatMode = RepeatMode.Restart
             )
         )
 
-        val primaryColor = MaterialTheme.colorScheme.primary
+        val pulse2 = infiniteTransition.animateFloat(
+            initialValue = 0.8f,
+            targetValue = 2.2f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(3500, easing = FastOutSlowInEasing),
+                repeatMode = RepeatMode.Restart,
+                initialStartOffset = StartOffset(1750)
+            )
+        )
+        val alpha2 = infiniteTransition.animateFloat(
+            initialValue = 0.35f,
+            targetValue = 0f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(3500, easing = FastOutSlowInEasing),
+                repeatMode = RepeatMode.Restart,
+                initialStartOffset = StartOffset(1750)
+            )
+        )
+
+        val accentColor = Color(0xFF007AFF)
 
         Box(
             modifier = modifier
                 .fillMaxWidth()
-                .height(280.dp)
-                .background(Color(0xFF0F172A), RoundedCornerShape(24.dp))
-                .clip(RoundedCornerShape(24.dp)),
+                .height(290.dp)
+                .clip(RoundedCornerShape(28.dp))
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(
+                            Color(0xFF1C1C1E),
+                            Color(0xFF0F0F11)
+                        )
+                    )
+                )
+                .border(
+                    width = 1.dp,
+                    brush = Brush.verticalGradient(
+                        colors = listOf(Color.White.copy(alpha = 0.15f), Color.Transparent)
+                    ),
+                    shape = RoundedCornerShape(28.dp)
+                ),
             contentAlignment = Alignment.Center
         ) {
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val center = Offset(size.width / 2, size.height / 2)
-                val maxRadius = size.width.coerceAtMost(size.height) / 2 * 0.85f
+                val baseRadius = 45.dp.toPx()
 
+                // Liquid halo rings
                 drawCircle(
-                    color = primaryColor.copy(alpha = 0.15f * (1f - ripple1.value)),
-                    radius = maxRadius * ripple1.value,
-                    center = center
-                )
-                drawCircle(
-                    color = primaryColor.copy(alpha = 0.15f * (1f - ripple2.value)),
-                    radius = maxRadius * ripple2.value,
-                    center = center
+                    color = accentColor,
+                    radius = baseRadius * pulse1.value,
+                    center = center,
+                    style = Stroke(width = 2.dp.toPx()),
+                    alpha = alpha1.value
                 )
 
-                for (i in 1..4) {
+                drawCircle(
+                    color = accentColor,
+                    radius = baseRadius * pulse2.value,
+                    center = center,
+                    style = Stroke(width = 2.dp.toPx()),
+                    alpha = alpha2.value
+                )
+
+                // Concentric sleek rings
+                for (r in listOf(60.dp.toPx(), 105.dp.toPx(), 140.dp.toPx())) {
                     drawCircle(
-                        color = primaryColor.copy(alpha = 0.2f),
-                        radius = maxRadius * (i / 4f),
+                        color = Color.White.copy(alpha = 0.06f),
+                        radius = r,
                         center = center,
-                        style = Stroke(width = 1.dp.toPx())
+                        style = Stroke(width = 1.5.dp.toPx())
                     )
                 }
-
-                drawLine(
-                    color = primaryColor.copy(alpha = 0.15f),
-                    start = Offset(center.x - maxRadius, center.y),
-                    end = Offset(center.x + maxRadius, center.y),
-                    strokeWidth = 1.dp.toPx()
-                )
-                drawLine(
-                    color = primaryColor.copy(alpha = 0.15f),
-                    start = Offset(center.x, center.y - maxRadius),
-                    end = Offset(center.x, center.y + maxRadius),
-                    strokeWidth = 1.dp.toPx()
-                )
-
-                val angleRad = Math.toRadians(sweepAngle.value.toDouble())
-                val endX = center.x + maxRadius * Math.cos(angleRad).toFloat()
-                val endY = center.y + maxRadius * Math.sin(angleRad).toFloat()
-                drawLine(
-                    color = primaryColor.copy(alpha = 0.5f),
-                    start = center,
-                    end = Offset(endX, endY),
-                    strokeWidth = 2.dp.toPx()
-                )
             }
 
+            // Core user avatar badge
             Box(
                 modifier = Modifier
-                    .size(54.dp)
+                    .size(64.dp)
                     .clip(CircleShape)
-                    .background(Color(0xFF1E293B))
-                    .border(3.dp, primaryColor, CircleShape),
+                    .background(Color(0xFF2C2C2E))
+                    .border(3.dp, accentColor, CircleShape),
                 contentAlignment = Alignment.Center
             ) {
-                AvatarBubble(avatarIndex = myAvatarIndex, size = 48.dp)
+                AvatarBubble(avatarIndex = myAvatarIndex, size = 56.dp)
             }
 
             val allNodes = remember(peers, blePeers) {
                 val list = mutableListOf<SonarNode>()
                 peers.forEachIndexed { idx, p ->
-                    val angle = 45f + idx * 75f
+                    val angle = 30f + idx * 80f
                     val distanceFactor = 0.45f + (idx % 2) * 0.25f
                     list.add(SonarNode.WifiPeer(p, angle, distanceFactor))
                 }
                 var bleCount = 0
                 blePeers.forEach { bp ->
                     if (peers.none { it.sessionToken == bp.sessionToken }) {
-                        val angle = 110f + bleCount * 85f
+                        val angle = 120f + bleCount * 90f
                         val distanceFactor = 0.55f + (bleCount % 2) * 0.25f
                         list.add(SonarNode.BlePeer(bp, angle, distanceFactor))
                         bleCount++
@@ -939,7 +1076,7 @@ class MainActivity : ComponentActivity() {
 
             allNodes.forEach { node ->
                 val angleRad = Math.toRadians(node.angle.toDouble())
-                val distancePx = 100 * node.distanceFactor
+                val distancePx = 105 * node.distanceFactor
 
                 val offsetX = (distancePx * Math.cos(angleRad)).toFloat()
                 val offsetY = (distancePx * Math.sin(angleRad)).toFloat()
@@ -962,31 +1099,40 @@ class MainActivity : ComponentActivity() {
                     ) {
                         Box(
                             modifier = Modifier
-                                .size(42.dp)
+                                .size(48.dp)
                                 .clip(CircleShape)
-                                .background(Color(0xFF334155))
+                                .background(Color(0xFF2C2C2E))
                                 .border(
                                     2.dp,
-                                    if (node is SonarNode.WifiPeer) Color(0xFF10B981) else Color(0xFF3B82F6),
+                                    if (node is SonarNode.WifiPeer) Color(0xFF30D158) else Color(0xFF007AFF),
                                     CircleShape
                                 ),
                             contentAlignment = Alignment.Center
                         ) {
-                            AvatarBubble(avatarIndex = node.avatarIndex, size = 36.dp)
+                            AvatarBubble(avatarIndex = node.avatarIndex, size = 42.dp)
                         }
-                        Spacer(modifier = Modifier.height(2.dp))
+                        Spacer(modifier = Modifier.height(4.dp))
                         Box(
                             modifier = Modifier
-                                .background(Color.Black.copy(alpha = 0.75f), RoundedCornerShape(4.dp))
-                                .padding(horizontal = 4.dp, vertical = 1.dp)
+                                .background(Color(0xFF1C1C1E).copy(alpha = 0.90f), RoundedCornerShape(12.dp))
+                                .border(0.5.dp, Color.White.copy(alpha = 0.2f), RoundedCornerShape(12.dp))
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
                         ) {
-                            Text(
-                                text = node.name,
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White,
-                                maxLines = 1
-                            )
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(
+                                    text = node.name,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White,
+                                    maxLines = 1
+                                )
+                                Text(
+                                    text = node.formattedDistance,
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color(0xFF30D158)
+                                )
+                            }
                         }
                     }
                 }
@@ -997,15 +1143,18 @@ class MainActivity : ComponentActivity() {
     sealed class SonarNode(val angle: Float, val distanceFactor: Float) {
         abstract val name: String
         abstract val avatarIndex: Int
+        abstract val formattedDistance: String
 
         class WifiPeer(val peer: PeerInfo, angle: Float, distanceFactor: Float) : SonarNode(angle, distanceFactor) {
             override val name: String = peer.userName
             override val avatarIndex: Int = peer.avatarIndex
+            override val formattedDistance: String = peer.formattedDistance
         }
 
         class BlePeer(val blePeer: BackgroundDiscoveryService.BlePeer, angle: Float, distanceFactor: Float) : SonarNode(angle, distanceFactor) {
             override val name: String = blePeer.userName
             override val avatarIndex: Int = blePeer.avatarIndex
+            override val formattedDistance: String = blePeer.formattedDistance
         }
     }
 
@@ -1250,6 +1399,78 @@ class MainActivity : ComponentActivity() {
             )
         }
 
+        // Stream Confirmation Request Dialog
+        streamConfirmationPrompt.value?.let { prompt ->
+            AlertDialog(
+                onDismissRequest = {
+                    prompt.onDecision(false)
+                    streamConfirmationPrompt.value = null
+                },
+                title = { Text(if (prompt.streamType == "SCREEN") "📺 Transmisión de Pantalla" else "🎙️ Transmisión de Audio") },
+                text = { Text("${prompt.peerName} desea transmitir ${if (prompt.streamType == "SCREEN") "su pantalla" else "su micrófono"} en vivo contigo. ¿Aceptas?") },
+                confirmButton = {
+                    Button(onClick = {
+                        prompt.onDecision(true)
+                        streamConfirmationPrompt.value = null
+                    }) {
+                        Text("Aceptar Transmisión")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        prompt.onDecision(false)
+                        streamConfirmationPrompt.value = null
+                    }) { Text("Rechazar") }
+                }
+            )
+        }
+
+        // Live Screen Stream Receiver Overlay
+        if (isReceivingScreenStream.value) {
+            AlertDialog(
+                onDismissRequest = {
+                    isReceivingScreenStream.value = false
+                    streamManager.stopScreenStream()
+                    sessionManager.sendStreamStop("SCREEN")
+                },
+                title = { Text("📺 Pantalla Remota en Vivo", fontWeight = FontWeight.Bold) },
+                text = {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        val frame = liveScreenFrameBitmap.value
+                        if (frame != null) {
+                            Image(
+                                bitmap = frame.asImageBitmap(),
+                                contentDescription = "Pantalla Remota",
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(380.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                            )
+                        } else {
+                            Box(
+                                modifier = Modifier.fillMaxWidth().height(200.dp).background(Color.Black),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text("Esperando fotogramas...", color = Color.White)
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            isReceivingScreenStream.value = false
+                            streamManager.stopScreenStream()
+                            sessionManager.sendStreamStop("SCREEN")
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    ) {
+                        Text("Cerrar Transmisión")
+                    }
+                }
+            )
+        }
+
         incomingFileRequest.value?.let { request ->
             val sizeInMb = String.format("%.2f MB", request.fileSize.toDouble() / (1024 * 1024))
             AlertDialog(
@@ -1475,6 +1696,27 @@ class MainActivity : ComponentActivity() {
                     }
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(activeChatPeerName.value, fontWeight = FontWeight.Bold, fontSize = 18.sp, modifier = Modifier.weight(1f))
+
+                    // Quick Clipboard Share Button
+                    IconButton(onClick = {
+                        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                        val clipData = clipboard.primaryClip
+                        if (clipData != null && clipData.itemCount > 0) {
+                            val text = clipData.getItemAt(0).text?.toString() ?: ""
+                            if (text.isNotEmpty()) {
+                                sessionManager.sendClipboardData(text)
+                                HapticManager.performLightClick(this@MainActivity)
+                                Toast.makeText(this@MainActivity, "📋 Portapapeles enviado: $text", Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(this@MainActivity, "Portapapeles vacío", Toast.LENGTH_SHORT).show()
+                            }
+                        } else {
+                            Toast.makeText(this@MainActivity, "Portapapeles vacío", Toast.LENGTH_SHORT).show()
+                        }
+                    }) {
+                        Text("📋", fontSize = 18.sp)
+                    }
+
                     IconButton(onClick = {
                         activeChatPeerDeviceId.value = ""
                     }) {
@@ -1535,54 +1777,91 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // Chat Input Field
-                Row(
+                // Walkie-Talkie & Chat Input Bar
+                var isWalkiePressing by remember { mutableStateOf(false) }
+
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                        .padding(12.dp)
                 ) {
-                    OutlinedTextField(
-                        value = messageInput,
-                        onValueChange = { messageInput = it },
-                        modifier = Modifier.weight(1f),
-                        placeholder = { Text("Escribe un mensaje estilo iPhone...") },
-                        shape = RoundedCornerShape(24.dp),
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                        keyboardActions = KeyboardActions(onSend = {
-                            if (messageInput.trim().isNotEmpty()) {
-                                val msg = sessionManager.sendChatMessage(
-                                    text = messageInput.trim(),
-                                    myName = myNameState.value,
-                                    peerDeviceId = activeChatPeerDeviceId.value
-                                )
-                                chatMessages.add(msg)
-                                messageInput = ""
-                                HapticManager.performLightClick(context)
-                            }
-                        })
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    IconButton(
-                        onClick = {
-                            if (messageInput.trim().isNotEmpty()) {
-                                val msg = sessionManager.sendChatMessage(
-                                    text = messageInput.trim(),
-                                    myName = myNameState.value,
-                                    peerDeviceId = activeChatPeerDeviceId.value
-                                )
-                                chatMessages.add(msg)
-                                messageInput = ""
-                                HapticManager.performLightClick(context)
-                            }
-                        },
-                        modifier = Modifier
-                            .size(48.dp)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.primary)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("⬆", fontSize = 20.sp, color = Color.White)
+                        // Push-To-Talk Walkie Talkie Button
+                        Button(
+                            onClick = {
+                                isWalkiePressing = !isWalkiePressing
+                                HapticManager.performLightClick(context)
+                                val info = currentConnectionInfo.value
+                                val host = if (info?.isGroupOwner == true) {
+                                    fileTransferManager.lastClientIpAddress ?: "192.168.49.2"
+                                } else {
+                                    info?.groupOwnerAddress?.hostAddress ?: "192.168.49.1"
+                                }
+                                if (isWalkiePressing) {
+                                    streamManager.startWalkieTalkieServer()
+                                    Toast.makeText(context, "📻 Intercomunicador Walkie-Talkie Activo", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    Toast.makeText(context, "Walkie-Talkie finalizado", Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (isWalkiePressing) Color(0xFFFF3B30) else Color(0xFF34C759)
+                            ),
+                            shape = RoundedCornerShape(20.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                        ) {
+                            Text(if (isWalkiePressing) "🔴 Soltar Walkie" else "📻 Push-to-Talk", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+
+                        Spacer(modifier = Modifier.width(8.dp))
+
+                        OutlinedTextField(
+                            value = messageInput,
+                            onValueChange = { messageInput = it },
+                            modifier = Modifier.weight(1f),
+                            placeholder = { Text("Escribe un mensaje...") },
+                            shape = RoundedCornerShape(24.dp),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                            keyboardActions = KeyboardActions(onSend = {
+                                if (messageInput.trim().isNotEmpty()) {
+                                    val msg = sessionManager.sendChatMessage(
+                                        text = messageInput.trim(),
+                                        myName = myNameState.value,
+                                        peerDeviceId = activeChatPeerDeviceId.value
+                                    )
+                                    chatMessages.add(msg)
+                                    messageInput = ""
+                                    HapticManager.performLightClick(context)
+                                }
+                            })
+                        )
+
+                        Spacer(modifier = Modifier.width(8.dp))
+
+                        IconButton(
+                            onClick = {
+                                if (messageInput.trim().isNotEmpty()) {
+                                    val msg = sessionManager.sendChatMessage(
+                                        text = messageInput.trim(),
+                                        myName = myNameState.value,
+                                        peerDeviceId = activeChatPeerDeviceId.value
+                                    )
+                                    chatMessages.add(msg)
+                                    messageInput = ""
+                                    HapticManager.performLightClick(context)
+                                }
+                            },
+                            modifier = Modifier
+                                .size(48.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.primary)
+                        ) {
+                            Text("⬆", fontSize = 20.sp, color = Color.White)
+                        }
                     }
                 }
             }
@@ -1627,7 +1906,7 @@ class MainActivity : ComponentActivity() {
                 modifier = Modifier.padding(bottom = 12.dp)
             )
 
-            // Active Transfer Bar
+            // Active Transfer Bar with Live Speed & ETA Monitor
             AnimatedVisibility(visible = isTransferring.value) {
                 Card(
                     modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
@@ -1635,14 +1914,27 @@ class MainActivity : ComponentActivity() {
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
-                        Text("Enviando/Recibiendo: ${transferFileName.value}", fontWeight = FontWeight.Bold)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("⚡ ${transferFileName.value}", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                            Text(transferSpeedState.value, fontWeight = FontWeight.Bold, color = Color(0xFF30D158), fontSize = 14.sp)
+                        }
                         Spacer(modifier = Modifier.height(8.dp))
                         LinearProgressIndicator(
                             progress = transferProgress.value,
                             modifier = Modifier.fillMaxWidth()
                         )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text("${(transferProgress.value * 100).toInt()}%", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("${(transferProgress.value * 100).toInt()}%", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Text(transferEtaState.value, fontSize = 12.sp, color = Color.Gray)
+                        }
                     }
                 }
             }
@@ -1730,23 +2022,30 @@ class MainActivity : ComponentActivity() {
                         )
                     }
 
-                    if (isScreenShareEnabled.value) {
-                        Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
                         Button(
                             onClick = {
-                                activeScreenShareSender.value = true
-                                sessionManager.sendScreenShareStart(
-                                    myNameState.value,
-                                    screenShareResolution.value,
-                                    screenShareFps.value,
-                                    screenShareQuality.value
-                                )
-                                Toast.makeText(context, "Iniciando transmisión...", Toast.LENGTH_SHORT).show()
+                                sessionManager.sendStreamRequest("AUDIO", myNameState.value)
+                                Toast.makeText(context, "Solicitando transmisión de audio...", Toast.LENGTH_SHORT).show()
                             },
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981))
+                        ) {
+                            Text("🎙️ Audio Vivo", fontSize = 12.sp)
+                        }
+                        Button(
+                            onClick = {
+                                sessionManager.sendStreamRequest("SCREEN", myNameState.value)
+                                Toast.makeText(context, "Solicitando transmisión de pantalla...", Toast.LENGTH_SHORT).show()
+                            },
+                            modifier = Modifier.weight(1f),
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFA855F7))
                         ) {
-                            Text("🖥️ Transmitir Pantalla")
+                            Text("📺 Pantalla Viva", fontSize = 12.sp)
                         }
                     }
                 }

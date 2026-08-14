@@ -246,7 +246,14 @@ fun AirDropBottomSheet(
                                     modifier = Modifier
                                         .size(60.dp)
                                         .clip(CircleShape)
-                                        .background(Color.White.copy(alpha = 0.08f))
+                                        .background(
+                                            Brush.linearGradient(
+                                                colors = listOf(
+                                                    Color(0xFF007AFF).copy(alpha = 0.3f),
+                                                    Color(0xFF5856D6).copy(alpha = 0.3f)
+                                                )
+                                            )
+                                        )
                                         .border(
                                             width = 2.dp,
                                             color = if (item is AirDropItem.Wifi) Color(0xFF34C759) else Color(0xFF007AFF),
@@ -268,12 +275,19 @@ fun AirDropBottomSheet(
                                     textAlign = TextAlign.Center,
                                     modifier = Modifier.fillMaxWidth()
                                 )
-                                Text(
-                                    text = if (item is AirDropItem.Wifi) "Wi-Fi" else "BLE",
-                                    color = Color.White.copy(alpha = 0.4f),
-                                    fontSize = 9.sp,
-                                    textAlign = TextAlign.Center
-                                )
+                                Box(
+                                    modifier = Modifier
+                                        .background(Color.White.copy(alpha = 0.12f), RoundedCornerShape(10.dp))
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Text(
+                                        text = item.formattedDistance,
+                                        color = Color(0xFF30D158),
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
                             }
                         }
                     }
@@ -349,17 +363,20 @@ sealed class AirDropItem {
     abstract val userName: String
     abstract val avatarIndex: Int
     abstract val sessionToken: String
+    abstract val formattedDistance: String
 
     data class Wifi(val peer: PeerInfo) : AirDropItem() {
         override val userName: String = peer.userName
         override val avatarIndex: Int = peer.avatarIndex
         override val sessionToken: String = peer.sessionToken
+        override val formattedDistance: String = peer.formattedDistance
     }
 
     data class Ble(val ble: BackgroundDiscoveryService.BlePeer) : AirDropItem() {
         override val userName: String = ble.userName
         override val avatarIndex: Int = ble.avatarIndex
         override val sessionToken: String = ble.sessionToken
+        override val formattedDistance: String = ble.formattedDistance
     }
 }
 
@@ -452,15 +469,6 @@ fun BeautifulBeaconActivationAnimation(
                 animationSpec = infiniteRepeatable(
                     animation = tween(1500, easing = FastOutSlowInEasing),
                     repeatMode = RepeatMode.Reverse
-                )
-            )
-
-            val rotateAngle = infiniteTransition.animateFloat(
-                initialValue = 0f,
-                targetValue = 360f,
-                animationSpec = infiniteRepeatable(
-                    animation = tween(6000, easing = LinearEasing),
-                    repeatMode = RepeatMode.Restart
                 )
             )
 

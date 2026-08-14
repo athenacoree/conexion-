@@ -22,8 +22,17 @@ data class PeerInfo(
     val userName: String,
     val sessionToken: String = "",
     val avatarIndex: Int = 0,
-    val phoneNumber: String = ""
-)
+    val phoneNumber: String = "",
+    val rssi: Int = -60,
+    val distanceMeters: Double = 1.0
+) {
+    val formattedDistance: String
+        get() = if (distanceMeters < 1.0) {
+            "${(distanceMeters * 100).toInt()} cm"
+        } else {
+            String.format(java.util.Locale.US, "%.1f m", distanceMeters)
+        }
+}
 
 class WifiP2pHelper(
     private val context: Context,
