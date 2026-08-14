@@ -43,7 +43,10 @@ fun AirDropBottomSheet(
     onBlePeerSelected: (BackgroundDiscoveryService.BlePeer) -> Unit,
     isSearching: Boolean,
     onToggleSearch: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isAudioShared: Boolean = false,
+    isAudioPlayEnabled: Boolean = false,
+    onAudioPlayToggleChanged: (Boolean) -> Unit = {}
 ) {
     AnimatedVisibility(
         visible = isOpen,
@@ -272,6 +275,49 @@ fun AirDropBottomSheet(
                                     textAlign = TextAlign.Center
                                 )
                             }
+                        }
+                    }
+                }
+
+                if (isAudioShared) {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = 0.08f)),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                Text("🎵", fontSize = 24.sp)
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column {
+                                    Text(
+                                        text = "Modo Transmisión de Audio",
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color.White,
+                                        fontSize = 14.sp
+                                    )
+                                    Text(
+                                        text = "Reproducir automáticamente en el receptor",
+                                        color = Color.White.copy(alpha = 0.6f),
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            }
+                            Switch(
+                                checked = isAudioPlayEnabled,
+                                onCheckedChange = onAudioPlayToggleChanged,
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = Color(0xFF007AFF),
+                                    checkedTrackColor = Color(0xFF007AFF).copy(alpha = 0.4f)
+                                )
+                            )
                         }
                     }
                 }

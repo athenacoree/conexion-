@@ -28,6 +28,12 @@ class FileTransferManager(
     // Keep track of client IP when a connection is received
     var lastClientIpAddress: String? = null
 
+    // URI where the last incoming file was successfully saved
+    var lastReceivedFileUri: Uri? = null
+
+    // Callback when remote audio playback is requested
+    var onAudioPlayRequested: ((Uri, String) -> Unit)? = null
+
     /**
      * Starts a TCP Server to listen for incoming file transfers.
      */
@@ -73,9 +79,17 @@ class FileTransferManager(
             val dataInputStream = DataInputStream(inputStream)
 
             // Read Metadata: File Name and File Size
-            val fileName = dataInputStream.readUTF()
+            var rawFileName = dataInputStream.readUTF()
             val fileSize = dataInputStream.readLong()
-            Log.d(tag, "Receiving file: $fileName, Size: $fileSize bytes")
+            Log.d(tag, "Receiving file: $rawFileName, Size: $fileSize bytes")
+
+            var shouldPlayRemotely = false
+            var fileName = rawFileName
+            if (rawFileName.startsWith("PLAY_REMOTE_AUDIO_")) {
+                shouldPlayRemotely = true
+                fileName = rawFileName.substring("PLAY_REMOTE_AUDIO_".length)
+                Log.d(tag, "Detected remote audio play request for file: $fileName")
+            }
 
             // Request user confirmation on Main Thread
             val confirmationDeferred = CompletableDeferred<Boolean>()
@@ -136,6 +150,14 @@ class FileTransferManager(
             Log.d(tag, "File received successfully: $fileName")
             onProgress(fileName, fileSize, fileSize, true)
 
+            val savedUri = lastReceivedFileUri
+            if (shouldPlayRemotely && savedUri != null) {
+                withContext(Dispatchers.Main) {
+                    Log.d(tag, "Triggering automatic remote audio play callback for: $fileName, URI: $savedUri")
+                    onAudioPlayRequested?.invoke(savedUri, fileName)
+                }
+            }
+
         } catch (e: Exception) {
             Log.e(tag, "Error during receiving file", e)
             onError("Error al recibir archivo: ${e.localizedMessage}")
@@ -145,7 +167,7 @@ class FileTransferManager(
     /**
      * Sends a file to the host specified by hostAddress.
      */
-    suspend fun sendFile(hostAddress: String, fileUri: Uri): Boolean = withContext(Dispatchers.IO) {
+    suspend fun sendFile(hostAddress: String, fileUri: Uri, playRemoteAudio: Boolean = false): Boolean = withContext(Dispatchers.IO) {
         var socket: Socket? = null
         var attempts = 0
         val maxAttempts = 5
@@ -173,7 +195,11 @@ class FileTransferManager(
             val dataOutputStream = DataOutputStream(outputStream)
 
             // Resolve file name and size from Uri
-            val fileName = getFileNameFromUri(fileUri) ?: "archivo_enviado.dat"
+            var fileName = getFileNameFromUri(fileUri) ?: "archivo_enviado.dat"
+            if (playRemoteAudio) {
+                fileName = "PLAY_REMOTE_AUDIO_" + fileName
+                Log.d(tag, "Prepend PLAY_REMOTE_AUDIO_ prefix to filename: $fileName")
+            }
             val fileSize = getFileSizeFromUri(fileUri)
 
             Log.d(tag, "Sending metadata: $fileName ($fileSize bytes)")
@@ -225,6 +251,7 @@ class FileTransferManager(
                 put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
             }
             val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
+            lastReceivedFileUri = uri
             uri?.let { context.contentResolver.openOutputStream(it) }
         } catch (e: Exception) {
             Log.e(tag, "Failed to create media store record", e)

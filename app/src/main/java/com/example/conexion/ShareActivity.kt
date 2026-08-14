@@ -57,6 +57,10 @@ class ShareActivity : ComponentActivity() {
     private var isTransferring = mutableStateOf(false)
     private var isTransferCompleted = mutableStateOf(false)
 
+    // Audio transmission states
+    private var isAudioShared = mutableStateOf(false)
+    private var isAudioPlayEnabled = mutableStateOf(false)
+
     // SQLite DB Helper
     private lateinit var dbHelper: DatabaseHelper
 
@@ -148,12 +152,17 @@ class ShareActivity : ComponentActivity() {
         if (Intent.ACTION_SEND == action && type != null) {
             intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)?.let { uri ->
                 sharedUris.value = listOf(uri)
-                Log.d(tag, "Shared single Uri in ShareActivity: $uri")
+                isAudioShared.value = type.startsWith("audio/") || uri.path?.endsWith(".mp3", ignoreCase = true) == true || uri.path?.endsWith(".wav", ignoreCase = true) == true || uri.path?.endsWith(".m4a", ignoreCase = true) == true
+                Log.d(tag, "Shared single Uri in ShareActivity: $uri, isAudio=${isAudioShared.value}")
             }
         } else if (Intent.ACTION_SEND_MULTIPLE == action && type != null) {
             intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)?.let { uris ->
                 sharedUris.value = uris
-                Log.d(tag, "Shared multiple Uris in ShareActivity: ${uris.size}")
+                isAudioShared.value = type.startsWith("audio/") || uris.any { uri ->
+                    val resolvedType = contentResolver.getType(uri)
+                    resolvedType?.startsWith("audio/") == true || uri.path?.endsWith(".mp3", ignoreCase = true) == true
+                }
+                Log.d(tag, "Shared multiple Uris in ShareActivity: ${uris.size}, isAudio=${isAudioShared.value}")
             }
         }
     }
@@ -221,7 +230,7 @@ class ShareActivity : ComponentActivity() {
                 while (!sent && attempts < 5) {
                     attempts++
                     Log.d(tag, "ShareActivity Attempt $attempts: Sending shared file: $uri to $hostAddress")
-                    sent = fileTransferManager.sendFile(hostAddress, uri)
+                    sent = fileTransferManager.sendFile(hostAddress, uri, isAudioPlayEnabled.value)
                     if (!sent) delay(1500)
                 }
             }
@@ -335,7 +344,10 @@ class ShareActivity : ComponentActivity() {
                         } else {
                             startAirDropScanning()
                         }
-                    }
+                    },
+                    isAudioShared = isAudioShared.value,
+                    isAudioPlayEnabled = isAudioPlayEnabled.value,
+                    onAudioPlayToggleChanged = { isAudioPlayEnabled.value = it }
                 )
             }
         }
