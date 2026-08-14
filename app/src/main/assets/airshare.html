@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>AirShare - Compartir con iPhone</title>
+    <style>
+        :root {
+            --primary-bg: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #311042 100%);
+            --glass-bg: rgba(255, 255, 255, 0.08);
+            --glass-border: rgba(255, 255, 255, 0.12);
+            --text-primary: #ffffff;
+            --text-secondary: #94a3b8;
+            --ios-blue: #007aff;
+            --ios-green: #34c759;
+            --bubble-me: #007aff;
+            --bubble-other: rgba(255, 255, 255, 0.15);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        body {
+            background: var(--primary-bg);
+            background-attachment: fixed;
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+            overflow-x: hidden;
+        }
+
+        header {
+            width: 100%;
+            max-width: 500px;
+            text-align: center;
+            margin-bottom: 24px;
+            margin-top: 10px;
+        }
+
+        header h1 {
+            font-size: 28px;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+            background: linear-gradient(to right, #38bdf8, #c084fc);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        header p {
+            color: var(--text-secondary);
+            font-size: 14px;
+            margin-top: 4px;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 500px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .card {
+            background: var(--glass-bg);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid var(--glass-border);
+            border-radius: 20px;
+            padding: 20px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        .card-title {
+            font-size: 17px;
+            font-weight: 600;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        /* Enviar Archivos */
+        .upload-area {
+            border: 2px dashed rgba(255, 255, 255, 0.2);
+            border-radius: 15px;
+            padding: 30px 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: background-color 0.2s, border-color 0.2s;
+        }
+
+        .upload-area:hover, .upload-area.dragover {
+            background: rgba(255, 255, 255, 0.04);
+            border-color: var(--ios-blue);
+        }
+
+        .upload-icon {
+            font-size: 40px;
+            margin-bottom: 12px;
+            display: block;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #007aff, #0056b3);
+            color: white;
+            border: none;
+            padding: 12px 20px;
+            border-radius: 12px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            width: 100%;
+            transition: opacity 0.2s;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .btn:active {
+            opacity: 0.8;
+        }
+
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        /* Progress Circle/Bar */
+        .progress-container {
+            display: none;
+            margin-top: 15px;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .progress-circle-wrap {
+            position: relative;
+            width: 50px;
+            height: 50px;
+        }
+
+        .progress-circle-svg {
+            transform: rotate(-90deg);
+            width: 50px;
+            height: 50px;
+        }
+
+        .progress-circle-bg {
+            fill: none;
+            stroke: rgba(255, 255, 255, 0.1);
+            stroke-width: 4;
+        }
+
+        .progress-circle-bar {
+            fill: none;
+            stroke: var(--ios-blue);
+            stroke-width: 4;
+            stroke-dasharray: 126;
+            stroke-dashoffset: 126;
+            transition: stroke-dashoffset 0.1s linear;
+        }
+
+        .progress-percentage {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        .progress-info {
+            flex: 1;
+            font-size: 13px;
+            color: var(--text-secondary);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        /* Recibir Archivos */
+        .files-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            max-height: 250px;
+            overflow-y: auto;
+        }
+
+        .file-item {
+            display: flex;
+            align-items: center;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 10px 12px;
+            gap: 12px;
+        }
+
+        .file-icon {
+            font-size: 24px;
+        }
+
+        .file-details {
+            flex: 1;
+            overflow: hidden;
+        }
+
+        .file-name {
+            font-size: 14px;
+            font-weight: 500;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .file-size {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-top: 2px;
+        }
+
+        .download-btn {
+            background: rgba(255, 255, 255, 0.1);
+            color: var(--text-primary);
+            border: none;
+            padding: 6px 12px;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            text-decoration: none;
+        }
+
+        .download-btn:hover {
+            background: rgba(255, 255, 255, 0.18);
+        }
+
+        .no-files {
+            text-align: center;
+            color: var(--text-secondary);
+            font-size: 14px;
+            padding: 20px 0;
+        }
+
+        /* Chat */
+        .chat-container {
+            display: flex;
+            flex-direction: column;
+            height: 320px;
+        }
+
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            padding-bottom: 10px;
+            margin-bottom: 12px;
+        }
+
+        .message {
+            max-width: 75%;
+            padding: 8px 14px;
+            border-radius: 16px;
+            font-size: 14px;
+            line-height: 1.4;
+            word-break: break-word;
+        }
+
+        .message.me {
+            align-self: flex-end;
+            background: var(--bubble-me);
+            color: white;
+            border-bottom-right-radius: 4px;
+        }
+
+        .message.other {
+            align-self: flex-start;
+            background: var(--bubble-other);
+            color: white;
+            border-bottom-left-radius: 4px;
+        }
+
+        .chat-input-area {
+            display: flex;
+            gap: 8px;
+        }
+
+        .chat-input {
+            flex: 1;
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid var(--glass-border);
+            border-radius: 12px;
+            padding: 10px 14px;
+            color: white;
+            font-size: 14px;
+            outline: none;
+        }
+
+        .chat-input::placeholder {
+            color: var(--text-secondary);
+        }
+
+        .chat-input:focus {
+            border-color: var(--ios-blue);
+        }
+
+        .chat-send-btn {
+            background: var(--ios-blue);
+            color: white;
+            border: none;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            font-size: 16px;
+            cursor: pointer;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        /* Intercambio de Contactos */
+        .contacts-flex {
+            display: flex;
+            gap: 10px;
+        }
+
+        .contacts-flex .btn {
+            flex: 1;
+        }
+
+        /* Toast notifications */
+        .toast {
+            position: fixed;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%) translateY(100px);
+            background: rgba(0, 0, 0, 0.85);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: white;
+            padding: 10px 20px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 500;
+            z-index: 9999;
+            transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+            pointer-events: none;
+            box-shadow: 0 10px 20px rgba(0,0,0,0.4);
+            text-align: center;
+            white-space: nowrap;
+        }
+
+        .toast.show {
+            transform: translateX(-50%) translateY(0);
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>AirShare Direct</h1>
+        <p>Compartir sin instalar nada en tu iPhone</p>
+    </header>
+
+    <div class="container">
+        <!-- Tarjeta de Envío de Archivos -->
+        <div class="card">
+            <div class="card-title">
+                <span>📤</span> Enviar Archivos a Android
+            </div>
+            <div class="upload-area" id="uploadArea">
+                <span class="upload-icon">📂</span>
+                <p style="font-size: 14px; font-weight: 500; margin-bottom: 4px;">Seleccionar archivos desde tu iPhone</p>
+                <p style="font-size: 12px; color: var(--text-secondary);">Fotos, Videos o Documentos (hasta 2GB)</p>
+                <input type="file" id="fileInput" style="display: none;" multiple>
+            </div>
+
+            <!-- Circular Progress Indicator -->
+            <div class="progress-container" id="progressContainer">
+                <div class="progress-circle-wrap">
+                    <svg class="progress-circle-svg">
+                        <circle class="progress-circle-bg" cx="25" cy="25" r="20" />
+                        <circle class="progress-circle-bar" id="progressCircleBar" cx="25" cy="25" r="20" />
+                    </svg>
+                    <div class="progress-percentage" id="progressPercentage">0%</div>
+                </div>
+                <div class="progress-info" id="progressInfo">Preparando subida...</div>
+            </div>
+        </div>
+
+        <!-- Tarjeta de Recibo de Archivos -->
+        <div class="card">
+            <div class="card-title" style="justify-content: space-between;">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <span>📥</span> Recibir Archivos de Android
+                </div>
+                <button class="download-btn" id="refreshFilesBtn" style="padding: 4px 8px; font-size: 11px;">🔄 Actualizar</button>
+            </div>
+            <div class="files-list" id="filesList">
+                <div class="no-files">No hay archivos compartidos actualmente.</div>
+            </div>
+        </div>
+
+        <!-- Tarjeta de Chat -->
+        <div class="card">
+            <div class="card-title">
+                <span>💬</span> Chat Directo iMessage Style
+            </div>
+            <div class="chat-container">
+                <div class="chat-messages" id="chatMessages">
+                    <div class="message other">¡Hola! Conectado con Android. Escribe algo aquí...</div>
+                </div>
+                <div class="chat-input-area">
+                    <input type="text" class="chat-input" id="chatInput" placeholder="Escribe un mensaje..." autocomplete="off">
+                    <button class="chat-send-btn" id="chatSendBtn">▲</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tarjeta de Intercambio de Contactos -->
+        <div class="card">
+            <div class="card-title">
+                <span>📇</span> Intercambio de Contactos
+            </div>
+            <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 12px;">Intercambia de forma segura tarjetas de contacto vCard.</p>
+            <div class="contacts-flex">
+                <button class="btn btn-secondary" id="receiveContactBtn">📥 Descargar Contacto Android</button>
+                <button class="btn" id="sendContactBtn">📤 Compartir Mi Contacto</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="toast" id="toast">Notificación</div>
+
+    <script>
+        // DOM Elements
+        const uploadArea = document.getElementById('uploadArea');
+        const fileInput = document.getElementById('fileInput');
+        const progressContainer = document.getElementById('progressContainer');
+        const progressCircleBar = document.getElementById('progressCircleBar');
+        const progressPercentage = document.getElementById('progressPercentage');
+        const progressInfo = document.getElementById('progressInfo');
+        const filesList = document.getElementById('filesList');
+        const refreshFilesBtn = document.getElementById('refreshFilesBtn');
+        const chatMessages = document.getElementById('chatMessages');
+        const chatInput = document.getElementById('chatInput');
+        const chatSendBtn = document.getElementById('chatSendBtn');
+        const receiveContactBtn = document.getElementById('receiveContactBtn');
+        const sendContactBtn = document.getElementById('sendContactBtn');
+        const toast = document.getElementById('toast');
+
+        // WebSocket setup
+        let ws;
+        function connectWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/chat`;
+
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                showToast('Chat en tiempo real conectado');
+            };
+
+            ws.onmessage = (event) => {
+                appendMessage(event.data, false);
+                // Soft vibration on message received (if supported by Safari/Chrome)
+                if (navigator.vibrate) {
+                    navigator.vibrate([100, 50, 100]);
+                }
+            };
+
+            ws.onclose = () => {
+                console.log('WS connection closed. Reconnecting...');
+                setTimeout(connectWebSocket, 3000);
+            };
+
+            ws.onerror = (err) => {
+                console.error('WS Error:', err);
+            };
+        }
+
+        // Initialize WebSockets
+        connectWebSocket();
+
+        // Show Toast
+        function showToast(message) {
+            toast.textContent = message;
+            toast.classList.add('show');
+            setTimeout(() => {
+                toast.classList.remove('show');
+            }, 3000);
+        }
+
+        // Fetch Files from Android
+        async function fetchAvailableFiles() {
+            try {
+                const response = await fetch('/files');
+                if (!response.ok) throw new Error('Error fetching files');
+                const files = await response.json();
+
+                if (files.length === 0) {
+                    filesList.innerHTML = '<div class="no-files">No hay archivos compartidos actualmente.</div>';
+                    return;
+                }
+
+                filesList.innerHTML = '';
+                files.forEach(file => {
+                    const fileItem = document.createElement('div');
+                    fileItem.className = 'file-item';
+
+                    const sizeMb = (file.size / (1024 * 1024)).toFixed(2);
+
+                    fileItem.innerHTML = `
+                        <div class="file-icon">${file.type.split(' ')[0]}</div>
+                        <div class="file-details">
+                            <div class="file-name">${file.name}</div>
+                            <div class="file-size">${sizeMb} MB</div>
+                        </div>
+                        <a href="/download/${encodeURIComponent(file.name)}" class="download-btn" download>Descargar</a>
+                    `;
+                    filesList.appendChild(fileItem);
+                });
+            } catch (error) {
+                console.error(error);
+                filesList.innerHTML = '<div class="no-files" style="color: #ef4444;">Fallo al cargar archivos</div>';
+            }
+        }
+
+        // Upload File via POST Multipart
+        async function uploadFiles(files) {
+            if (files.length === 0) return;
+
+            progressContainer.style.display = 'flex';
+
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+                if (file.size > 2 * 1024 * 1024 * 1024) {
+                    showToast(`El archivo ${file.name} supera el límite de 2GB`);
+                    continue;
+                }
+
+                progressInfo.textContent = `Subiendo: ${file.name}`;
+
+                const formData = new FormData();
+                formData.append('file', file);
+
+                try {
+                    await new Promise((resolve, reject) => {
+                        const xhr = new XMLHttpRequest();
+                        xhr.open('POST', '/upload', true);
+
+                        xhr.upload.onprogress = (e) => {
+                            if (e.lengthComputable) {
+                                const percent = Math.round((e.loaded / e.total) * 100);
+                                updateCircularProgress(percent);
+                            }
+                        };
+
+                        xhr.onload = () => {
+                            if (xhr.status === 200) {
+                                resolve();
+                            } else {
+                                reject(new Error(xhr.responseText || 'Upload failed'));
+                            }
+                        };
+
+                        xhr.onerror = () => reject(new Error('Network error'));
+                        xhr.send(formData);
+                    });
+
+                    showToast(`¡${file.name} subido con éxito!`);
+                } catch (err) {
+                    showToast(`Error al subir ${file.name}: ${err.message}`);
+                    console.error(err);
+                }
+            }
+
+            // Hide and Reset Progress
+            setTimeout(() => {
+                progressContainer.style.display = 'none';
+                updateCircularProgress(0);
+            }, 1500);
+
+            // Refresh available files
+            fetchAvailableFiles();
+        }
+
+        // Circular progress calculation
+        function updateCircularProgress(percentage) {
+            progressPercentage.textContent = `${percentage}%`;
+            const radius = 20;
+            const circumference = 2 * Math.PI * radius; // ~125.66
+            const offset = circumference - (percentage / 100) * circumference;
+            progressCircleBar.style.strokeDashoffset = offset;
+        }
+
+        // Click and drag upload events
+        uploadArea.addEventListener('click', () => fileInput.click());
+        fileInput.addEventListener('change', () => {
+            uploadFiles(fileInput.files);
+        });
+
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            if (e.dataTransfer.files) {
+                uploadFiles(e.dataTransfer.files);
+            }
+        });
+
+        // Chat send logic
+        function appendMessage(text, isMe) {
+            const messageEl = document.createElement('div');
+            messageEl.className = `message ${isMe ? 'me' : 'other'}`;
+            messageEl.textContent = text;
+            chatMessages.appendChild(messageEl);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        // Send Message
+        function sendMessage() {
+            const text = chatInput.value.trim();
+            if (!text) return;
+
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(text);
+                appendMessage(text, true);
+                chatInput.value = '';
+            } else {
+                showToast('Chat no conectado. Intentando reconectar...');
+            }
+        }
+
+        chatSendBtn.addEventListener('click', sendMessage);
+        chatInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') sendMessage();
+        });
+
+        // Contact sharing
+        receiveContactBtn.addEventListener('click', () => {
+            window.location.href = '/contact';
+        });
+
+        sendContactBtn.addEventListener('click', async () => {
+            const name = prompt("Introduce tu nombre:");
+            if (!name) return;
+            const phone = prompt("Introduce tu número de teléfono:");
+            if (!phone) return;
+
+            const vCard = `BEGIN:VCARD\nVERSION:3.0\nFN:${name}\nTEL;TYPE=CELL:${phone}\nEND:VCARD`;
+
+            try {
+                const response = await fetch('/contact', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'text/plain'
+                    },
+                    body: vCard
+                });
+
+                if (response.ok) {
+                    showToast('¡Contacto compartido con éxito!');
+                } else {
+                    showToast('Error al compartir contacto');
+                }
+            } catch (err) {
+                showToast('Fallo de red al enviar contacto');
+                console.error(err);
+            }
+        });
+
+        // Event listeners
+        refreshFilesBtn.addEventListener('click', fetchAvailableFiles);
+
+        // Initial fetch
+        fetchAvailableFiles();
+    </script>
+</body>
+</html>

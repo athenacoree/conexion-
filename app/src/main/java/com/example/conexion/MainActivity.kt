@@ -51,6 +51,11 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import java.net.NetworkInterface
+import java.util.Collections
+import java.io.File
+import android.os.Environment
 
 class MainActivity : ComponentActivity() {
 
@@ -397,10 +402,144 @@ class MainActivity : ComponentActivity() {
         }
         wifiP2pHelper.unregister()
         fileTransferManager.stopServer()
+        airShareServer?.stop()
 
         if (currentConnectionInfo.value == null) {
             toggleWifi(false)
         }
+    }
+
+    private var airShareServer: AirShareServer? = null
+    private var isAirShareServerActive = mutableStateOf(false)
+    private var airShareLocalIp = mutableStateOf("")
+
+    private fun getLocalIpAddress(context: Context): String {
+        try {
+            val interfaces = NetworkInterface.getNetworkInterfaces()
+            if (interfaces != null) {
+                for (networkInterface in Collections.list(interfaces)) {
+                    val addresses = networkInterface.inetAddresses
+                    for (address in Collections.list(addresses)) {
+                        if (!address.isLoopbackAddress && !address.isLinkLocalAddress) {
+                            val host = address.hostAddress
+                            if (host != null && host.indexOf(':') < 0) {
+                                val name = networkInterface.name.lowercase()
+                                if (name.contains("wlan") || name.contains("ap") || name.contains("p2p")) {
+                                    return host
+                                }
+                            }
+                        }
+                    }
+                }
+                for (networkInterface in Collections.list(interfaces)) {
+                    val addresses = networkInterface.inetAddresses
+                    for (address in Collections.list(addresses)) {
+                        if (!address.isLoopbackAddress && !address.isLinkLocalAddress) {
+                            val host = address.hostAddress
+                            if (host != null && host.indexOf(':') < 0) {
+                                return host
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (ex: Exception) {
+            Log.e(tag, "Error getting NetworkInterface IP", ex)
+        }
+
+        try {
+            val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            val ipAddress = wifiManager?.connectionInfo?.ipAddress ?: 0
+            if (ipAddress != 0) {
+                return String.format(
+                    java.util.Locale.US,
+                    "%d.%d.%d.%d",
+                    ipAddress and 0xff,
+                    ipAddress shr 8 and 0xff,
+                    ipAddress shr 16 and 0xff,
+                    ipAddress shr 24 and 0xff
+                )
+            }
+        } catch (e: Exception) {
+            Log.e(tag, "Error getting WifiManager IP", e)
+        }
+
+        return "127.0.0.1"
+    }
+
+    private fun toggleAirShareServer() {
+        val serverActive = isAirShareServerActive.value
+        if (serverActive) {
+            airShareServer?.stop()
+            isAirShareServerActive.value = false
+        } else {
+            airShareLocalIp.value = getLocalIpAddress(this)
+            val directory = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "Conexion")
+            if (!directory.exists()) {
+                directory.mkdirs()
+            }
+
+            airShareServer = AirShareServer(
+                context = this,
+                myNameProvider = { myNameState.value },
+                myPhoneProvider = { myPhoneState.value },
+                onMessageReceived = { message ->
+                    lifecycleScope.launch(Dispatchers.Main) {
+                        Toast.makeText(this@MainActivity, "AirShare Message: $message", Toast.LENGTH_SHORT).show()
+                        val vibrator = getSystemService(Context.VIBRATOR_SERVICE) as? android.os.Vibrator
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            vibrator?.vibrate(android.os.VibrationEffect.createOneShot(100, android.os.VibrationEffect.DEFAULT_AMPLITUDE))
+                        } else {
+                            @Suppress("DEPRECATION")
+                            vibrator?.vibrate(100)
+                        }
+                    }
+                },
+                onContactReceived = { name, phone ->
+                    lifecycleScope.launch(Dispatchers.Main) {
+                        saveContactToAddressBook(name, phone)
+                    }
+                },
+                onFileReceived = { savedFileName ->
+                    lifecycleScope.launch(Dispatchers.Main) {
+                        showTransferNotification(savedFileName)
+                        Toast.makeText(this@MainActivity, "AirShare: Archivo recibido: $savedFileName", Toast.LENGTH_LONG).show()
+                    }
+                },
+                onServerStopped = {
+                    lifecycleScope.launch(Dispatchers.Main) {
+                        isAirShareServerActive.value = false
+                    }
+                }
+            )
+            airShareServer?.start()
+            isAirShareServerActive.value = true
+            Toast.makeText(this, "Servidor AirShare iniciado en http://${airShareLocalIp.value}:8989", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun showTransferNotification(fileName: String) {
+        val channelId = "airshare_channel"
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = android.app.NotificationChannel(
+                channelId,
+                "Transferencias AirShare",
+                android.app.NotificationManager.IMPORTANCE_DEFAULT
+            )
+            notificationManager.createNotificationChannel(channel)
+        }
+
+        val notification = androidx.core.app.NotificationCompat.Builder(this, channelId)
+            .setContentTitle("Archivo recibido desde iPhone")
+            .setContentText(fileName)
+            .setSmallIcon(android.R.drawable.stat_sys_download_done)
+            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_DEFAULT)
+            .setAutoCancel(true)
+            .build()
+
+        notificationManager.notify(99, notification)
     }
 
     private fun toggleWifi(enable: Boolean) {
@@ -924,16 +1063,66 @@ class MainActivity : ComponentActivity() {
         var selectedPeerForActions by remember { mutableStateOf<PeerInfo?>(null) }
         var selectedBlePeerForActions by remember { mutableStateOf<BackgroundDiscoveryService.BlePeer?>(null) }
 
+        var activeTab by remember { mutableStateOf("direct") }
+
         Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(16.dp)
-                .verticalScroll(rememberScrollState()),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Top
+            modifier = Modifier.fillMaxSize()
         ) {
-            Text(
-                text = "Conexión Directa",
+            // iOS Segmented Tab Selector
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                    .background(Color.Gray.copy(alpha = 0.15f), RoundedCornerShape(12.dp))
+                    .padding(4.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                val tabs = listOf("Conexión Directa", "Compartir con iPhone")
+                tabs.forEachIndexed { index, title ->
+                    val isSelected = (index == 0 && activeTab == "direct") || (index == 1 && activeTab == "airshare")
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent)
+                            .clickable {
+                                activeTab = if (index == 0) "direct" else "airshare"
+                            }
+                            .padding(vertical = 10.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = title,
+                            color = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp
+                        )
+                    }
+                }
+            }
+
+            if (activeTab == "airshare") {
+                AirShareScreen(
+                    ipAddress = airShareLocalIp.value,
+                    serverPort = 8989,
+                    isServerActive = isAirShareServerActive.value,
+                    onToggleServer = {
+                        toggleAirShareServer()
+                    },
+                    modifier = Modifier.weight(1f)
+                )
+            } else {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = 16.dp)
+                        .verticalScroll(rememberScrollState()),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Top
+                ) {
+                    Text(
+                        text = "Conexión Directa",
                 style = MaterialTheme.typography.headlineMedium.copy(
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary
@@ -1434,6 +1623,8 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
+            }
+                } // End of activeTab == "direct" Column
             }
 
             connectionPromptPeer.value?.let { peer ->
