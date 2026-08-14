@@ -20,6 +20,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -34,6 +35,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.Box
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
@@ -52,12 +58,15 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var wifiP2pHelper: WifiP2pHelper
     private lateinit var fileTransferManager: FileTransferManager
+    private lateinit var sessionManager: SessionManager
 
     private var audioBeaconEmitter: AudioBeaconEmitter? = null
 
     // App state observables
     private var isWifiEnabledState = mutableStateOf(false)
     private var myNameState = mutableStateOf("Mi Dispositivo")
+    private var myAvatarState = mutableStateOf(0)
+    private var myPhoneState = mutableStateOf("")
     private var peersState = mutableStateOf<List<PeerInfo>>(emptyList())
     private var currentConnectionInfo = mutableStateOf<WifiP2pInfo?>(null)
     private var connectionPromptPeer = mutableStateOf<PeerInfo?>(null)
@@ -68,11 +77,23 @@ class MainActivity : ComponentActivity() {
     private var isTransferring = mutableStateOf(false)
     private var isTransferCompleted = mutableStateOf(false)
 
+    // Chat and Contact Share UI state
+    private var isChatActive = mutableStateOf(false)
+    private var chatMessages = mutableStateListOf<ChatMessage>()
+    private var chatRequestPrompt = mutableStateOf<ChatPrompt?>(null)
+    private var contactRequestPrompt = mutableStateOf<ContactPrompt?>(null)
+    private var activeChatPeerName = mutableStateOf("")
+
+    data class ChatMessage(val text: String, val isMe: Boolean)
+    data class ChatPrompt(val peerName: String, val onDecision: (Boolean) -> Unit)
+    data class ContactPrompt(val peerName: String, val onDecision: (Boolean) -> Unit)
+
     // BLE background service state
     private var isBgDiscoveryEnabled = mutableStateOf(false)
 
     // TAREA B & E: Candidates discovered from background BLE scan
     private val sendingCandidates = mutableStateMapOf<String, BackgroundDiscoveryService.BlePeer>()
+    private val blePeersMap = mutableStateMapOf<String, BackgroundDiscoveryService.BlePeer>()
     private var showSingleCandidateManual = mutableStateOf<String?>(null)
 
     // Current Session Token
@@ -96,11 +117,13 @@ class MainActivity : ComponentActivity() {
             if (intent?.action == BackgroundDiscoveryService.ACTION_PEER_SENDING) {
                 val name = intent.getStringExtra(BackgroundDiscoveryService.EXTRA_PEER_NAME) ?: "Dispositivo Emisor"
                 val token = intent.getStringExtra(BackgroundDiscoveryService.EXTRA_PEER_TOKEN) ?: "000000000000"
+                val avatarIdx = intent.getIntExtra("EXTRA_PEER_AVATAR", 0)
                 val isAmbiguous = intent.getBooleanExtra("EXTRA_IS_AMBIGUOUS", false)
-                Log.d(tag, "Received BLE peer sending from background service: $name, token=$token, isAmbiguous=$isAmbiguous")
+                Log.d(tag, "Received BLE peer sending from background service: $name, token=$token, isAmbiguous=$isAmbiguous, avatarIndex=$avatarIdx")
 
-                val peer = BackgroundDiscoveryService.BlePeer(name, token, 1)
+                val peer = BackgroundDiscoveryService.BlePeer(name, token, 1, avatarIdx)
                 sendingCandidates[token] = peer
+                blePeersMap[token] = peer
 
                 // Auto-expiration after 15 seconds to keep candidates list clean
                 lifecycleScope.launch {
@@ -131,6 +154,64 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        val prefs = getSharedPreferences("conexion_prefs", Context.MODE_PRIVATE)
+        myNameState.value = prefs.getString("user_name", "Mi Dispositivo") ?: "Mi Dispositivo"
+        myAvatarState.value = prefs.getInt("avatar_index", 0)
+        myPhoneState.value = prefs.getString("phone_number", "") ?: ""
+
+        sessionManager = SessionManager(
+            onMessageReceived = { text ->
+                chatMessages.add(ChatMessage(text, false))
+            },
+            onChatRequestReceived = { peerName, decisionCallback ->
+                chatRequestPrompt.value = ChatPrompt(peerName) { accepted ->
+                    if (accepted) {
+                        isChatActive.value = true
+                        activeChatPeerName.value = peerName
+                        chatMessages.clear()
+                    }
+                    decisionCallback(accepted)
+                }
+            },
+            onChatRequestResponse = { accepted ->
+                if (accepted) {
+                    isChatActive.value = true
+                    chatMessages.clear()
+                    Toast.makeText(this, "¡Solicitud de chat aceptada!", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this, "El usuario rechazó la solicitud de chat.", Toast.LENGTH_LONG).show()
+                }
+            },
+            onContactRequestReceived = { peerName, decisionCallback ->
+                contactRequestPrompt.value = ContactPrompt(peerName) { accepted ->
+                    decisionCallback(accepted)
+                    if (accepted) {
+                        // Send my own data to peer immediately
+                        sessionManager.sendContactData(myNameState.value, myPhoneState.value)
+                        Toast.makeText(this, "Compartiendo contacto...", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            },
+            onContactRequestResponse = { accepted ->
+                if (accepted) {
+                    // Send my own data to peer
+                    sessionManager.sendContactData(myNameState.value, myPhoneState.value)
+                    Toast.makeText(this, "Solicitud aceptada. Compartiendo contacto...", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this, "El usuario rechazó el intercambio de contactos.", Toast.LENGTH_LONG).show()
+                }
+            },
+            onContactDataReceived = { name, phone ->
+                // Guard contact into the Address Book
+                saveContactToAddressBook(name, phone)
+            },
+            onError = { err ->
+                runOnUiThread {
+                    Toast.makeText(this, err, Toast.LENGTH_LONG).show()
+                }
+            }
+        )
+
         wifiP2pHelper = WifiP2pHelper(
             context = this,
             onConnectionChanged = { info ->
@@ -141,6 +222,14 @@ class MainActivity : ComponentActivity() {
                     lifecycleScope.launch {
                         fileTransferManager.startServer()
                     }
+                    // Start SessionManager servers & clients
+                    if (info.isGroupOwner) {
+                        sessionManager.startServer()
+                    } else {
+                        val hostAddress = info.groupOwnerAddress?.hostAddress ?: "192.168.49.1"
+                        sessionManager.connectToHost(hostAddress)
+                    }
+
                     val uris = pendingShareUris.value
                     if (uris.isNotEmpty()) {
                         lifecycleScope.launch {
@@ -168,6 +257,8 @@ class MainActivity : ComponentActivity() {
                     Toast.makeText(this, "¡Conectado exitosamente!", Toast.LENGTH_SHORT).show()
                 } else {
                     fileTransferManager.stopServer()
+                    sessionManager.stop()
+                    isChatActive.value = false
                 }
             },
             onPeersDiscovered = { peers ->
@@ -251,9 +342,11 @@ class MainActivity : ComponentActivity() {
             val name = intent.getStringExtra(BackgroundDiscoveryService.EXTRA_PEER_NAME) ?: "Dispositivo"
             val token = intent.getStringExtra(BackgroundDiscoveryService.EXTRA_PEER_TOKEN) ?: "000000000000"
             val state = intent.getIntExtra("EXTRA_PEER_STATE", 0)
-            Log.d(tag, "Handled launch intent with BLE match: $name, token=$token")
-            val peer = BackgroundDiscoveryService.BlePeer(name, token, state)
+            val avatarIdx = intent.getIntExtra("EXTRA_PEER_AVATAR", 0)
+            Log.d(tag, "Handled launch intent with BLE match: $name, token=$token, avatarIndex=$avatarIdx")
+            val peer = BackgroundDiscoveryService.BlePeer(name, token, state, avatarIdx)
             sendingCandidates[token] = peer
+            blePeersMap[token] = peer
             showSingleCandidateManual.value = token
         }
     }
@@ -357,11 +450,49 @@ class MainActivity : ComponentActivity() {
         stopService(serviceIntent)
     }
 
+    // Placeholder function to save contacts
+    private fun saveContactToAddressBook(name: String, phone: String) {
+        if (phone.isEmpty()) {
+            Toast.makeText(this, "El teléfono de $name está vacío, no se guardó.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        try {
+            val contentResolver = contentResolver
+            val ops = java.util.ArrayList<android.content.ContentProviderOperation>()
+
+            ops.add(android.content.ContentProviderOperation.newInsert(android.provider.ContactsContract.RawContacts.CONTENT_URI)
+                .withValue(android.provider.ContactsContract.RawContacts.ACCOUNT_TYPE, null)
+                .withValue(android.provider.ContactsContract.RawContacts.ACCOUNT_NAME, null)
+                .build())
+
+            ops.add(android.content.ContentProviderOperation.newInsert(android.provider.ContactsContract.Data.CONTENT_URI)
+                .withValueBackReference(android.provider.ContactsContract.Data.RAW_CONTACT_ID, 0)
+                .withValue(android.provider.ContactsContract.Data.MIMETYPE, android.provider.ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE)
+                .withValue(android.provider.ContactsContract.CommonDataKinds.StructuredName.DISPLAY_NAME, name)
+                .build())
+
+            ops.add(android.content.ContentProviderOperation.newInsert(android.provider.ContactsContract.Data.CONTENT_URI)
+                .withValueBackReference(android.provider.ContactsContract.Data.RAW_CONTACT_ID, 0)
+                .withValue(android.provider.ContactsContract.Data.MIMETYPE, android.provider.ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE)
+                .withValue(android.provider.ContactsContract.CommonDataKinds.Phone.NUMBER, phone)
+                .withValue(android.provider.ContactsContract.CommonDataKinds.Phone.TYPE, android.provider.ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE)
+                .build())
+
+            contentResolver.applyBatch(android.provider.ContactsContract.AUTHORITY, ops)
+            Toast.makeText(this, "¡Contacto $name guardado exitosamente!", Toast.LENGTH_LONG).show()
+        } catch (e: Exception) {
+            Log.e(tag, "Failed to save contact", e)
+            Toast.makeText(this, "Fallo al guardar el contacto en el sistema: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+        }
+    }
+
     private fun requestAllPermissions() {
         val permissions = mutableListOf(
             Manifest.permission.ACCESS_FINE_LOCATION,
             Manifest.permission.ACCESS_COARSE_LOCATION,
-            Manifest.permission.RECORD_AUDIO
+            Manifest.permission.RECORD_AUDIO,
+            Manifest.permission.WRITE_CONTACTS,
+            Manifest.permission.READ_CONTACTS
         )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissions.add(Manifest.permission.NEARBY_WIFI_DEVICES)
@@ -504,6 +635,258 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // A list of lovely gradient profiles for users
+    data class AvatarDesign(val emoji: String, val bgGradients: List<Color>, val contentColor: Color)
+
+    companion object {
+        val AVATAR_DESIGNS = listOf(
+            AvatarDesign("🦁", listOf(Color(0xFFFF9800), Color(0xFFFF5722)), Color.White),
+            AvatarDesign("🦄", listOf(Color(0xFFE91E63), Color(0xFF9C27B0)), Color.White),
+            AvatarDesign("🐨", listOf(Color(0xFF607D8B), Color(0xFF90A4AE)), Color.White),
+            AvatarDesign("🐼", listOf(Color(0xFF212121), Color(0xFF757575)), Color.White),
+            AvatarDesign("🦊", listOf(Color(0xFFFF5722), Color(0xFFFFC107)), Color.White),
+            AvatarDesign("🐙", listOf(Color(0xFF2196F3), Color(0xFF00BCD4)), Color.White),
+            AvatarDesign("🦖", listOf(Color(0xFF4CAF50), Color(0xFF8BC34A)), Color.White),
+            AvatarDesign("🦉", listOf(Color(0xFF795548), Color(0xFFA1887F)), Color.White)
+        )
+    }
+
+    @Composable
+    fun AvatarBubble(
+        avatarIndex: Int,
+        size: androidx.compose.ui.unit.Dp,
+        modifier: Modifier = Modifier
+    ) {
+        val design = AVATAR_DESIGNS.getOrElse(avatarIndex) { AVATAR_DESIGNS[0] }
+        Box(
+            modifier = modifier
+                .size(size)
+                .clip(CircleShape)
+                .background(
+                    androidx.compose.ui.graphics.Brush.linearGradient(design.bgGradients)
+                )
+                .border(2.dp, Color.White, CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = design.emoji,
+                fontSize = (size.value * 0.5f).sp
+            )
+        }
+    }
+
+    // Modern Sonar/Radar Scan Screen Component
+    @Composable
+    fun ModernSonarRadar(
+        myAvatarIndex: Int,
+        peers: List<PeerInfo>,
+        blePeers: List<BackgroundDiscoveryService.BlePeer>,
+        onPeerClick: (PeerInfo) -> Unit,
+        onBlePeerClick: (BackgroundDiscoveryService.BlePeer) -> Unit,
+        modifier: Modifier = Modifier
+    ) {
+        val infiniteTransition = rememberInfiniteTransition()
+
+        // Ripple radius animations
+        val ripple1 = infiniteTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(4000, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart
+            )
+        )
+        val ripple2 = infiniteTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(4000, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart,
+                initialStartOffset = StartOffset(2000)
+            )
+        )
+
+        // Rotation animation for the radar sweep beam
+        val sweepAngle = infiniteTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = 360f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(3000, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart
+            )
+        )
+
+        val primaryColor = MaterialTheme.colorScheme.primary
+
+        Box(
+            modifier = modifier
+                .fillMaxWidth()
+                .height(300.dp)
+                .background(Color(0xFF0F172A), RoundedCornerShape(24.dp))
+                .clip(RoundedCornerShape(24.dp)),
+            contentAlignment = Alignment.Center
+        ) {
+            // Sonar Canvas drawing lines and sweep
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val center = Offset(size.width / 2, size.height / 2)
+                val maxRadius = size.width.coerceAtMost(size.height) / 2 * 0.85f
+
+                // Draw solid circles of ripples
+                drawCircle(
+                    color = primaryColor.copy(alpha = 0.15f * (1f - ripple1.value)),
+                    radius = maxRadius * ripple1.value,
+                    center = center
+                )
+                drawCircle(
+                    color = primaryColor.copy(alpha = 0.15f * (1f - ripple2.value)),
+                    radius = maxRadius * ripple2.value,
+                    center = center
+                )
+
+                // Draw background radar concentric circles
+                for (i in 1..4) {
+                    drawCircle(
+                        color = primaryColor.copy(alpha = 0.2f),
+                        radius = maxRadius * (i / 4f),
+                        center = center,
+                        style = Stroke(width = 1.dp.toPx())
+                    )
+                }
+
+                // Draw crosshairs axes
+                drawLine(
+                    color = primaryColor.copy(alpha = 0.15f),
+                    start = Offset(center.x - maxRadius, center.y),
+                    end = Offset(center.x + maxRadius, center.y),
+                    strokeWidth = 1.dp.toPx()
+                )
+                drawLine(
+                    color = primaryColor.copy(alpha = 0.15f),
+                    start = Offset(center.x, center.y - maxRadius),
+                    end = Offset(center.x, center.y + maxRadius),
+                    strokeWidth = 1.dp.toPx()
+                )
+
+                // Draw sweep beam line
+                val angleRad = Math.toRadians(sweepAngle.value.toDouble())
+                val endX = center.x + maxRadius * Math.cos(angleRad).toFloat()
+                val endY = center.y + maxRadius * Math.sin(angleRad).toFloat()
+                drawLine(
+                    color = primaryColor.copy(alpha = 0.5f),
+                    start = center,
+                    end = Offset(endX, endY),
+                    strokeWidth = 2.dp.toPx()
+                )
+            }
+
+            // Center: ME
+            Box(
+                modifier = Modifier
+                    .size(54.dp)
+                    .clip(CircleShape)
+                    .background(Color(0xFF1E293B))
+                    .border(3.dp, primaryColor, CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                AvatarBubble(avatarIndex = myAvatarIndex, size = 48.dp)
+            }
+
+            // Combine/Deduplicate Peers to represent them as Sonar Nodes
+            // Let's lay them out in circular patterns dynamically!
+            val allNodes = remember(peers, blePeers) {
+                val list = mutableListOf<SonarNode>()
+                peers.forEachIndexed { idx, p ->
+                    // Lay them out at specific angles
+                    val angle = 45f + idx * 75f
+                    val distanceFactor = 0.45f + (idx % 2) * 0.25f
+                    list.add(SonarNode.WifiPeer(p, angle, distanceFactor))
+                }
+                var bleCount = 0
+                blePeers.forEach { bp ->
+                    // Only add if not already in peers
+                    if (peers.none { it.sessionToken == bp.sessionToken }) {
+                        val angle = 110f + bleCount * 85f
+                        val distanceFactor = 0.55f + (bleCount % 2) * 0.25f
+                        list.add(SonarNode.BlePeer(bp, angle, distanceFactor))
+                        bleCount++
+                    }
+                }
+                list
+            }
+
+            // Draw peers as overlapping items on the Sonar
+            allNodes.forEach { node ->
+                val angleRad = Math.toRadians(node.angle.toDouble())
+                // Max radius offset (roughly 110.dp for container height)
+                val distancePx = 100 * node.distanceFactor
+
+                val offsetX = (distancePx * Math.cos(angleRad)).toFloat()
+                val offsetY = (distancePx * Math.sin(angleRad)).toFloat()
+
+                Box(
+                    modifier = Modifier
+                        .offset(x = offsetX.dp, y = offsetY.dp)
+                        .clickable {
+                            when (node) {
+                                is SonarNode.WifiPeer -> onPeerClick(node.peer)
+                                is SonarNode.BlePeer -> onBlePeerClick(node.blePeer)
+                            }
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(42.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFF334155))
+                                .border(
+                                    2.dp,
+                                    if (node is SonarNode.WifiPeer) Color(0xFF10B981) else Color(0xFF3B82F6),
+                                    CircleShape
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            AvatarBubble(avatarIndex = node.avatarIndex, size = 36.dp)
+                        }
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Box(
+                            modifier = Modifier
+                                .background(Color.Black.copy(alpha = 0.75f), RoundedCornerShape(4.dp))
+                                .padding(horizontal = 4.dp, vertical = 1.dp)
+                        ) {
+                            Text(
+                                text = node.name,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                maxLines = 1
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    sealed class SonarNode(val angle: Float, val distanceFactor: Float) {
+        abstract val name: String
+        abstract val avatarIndex: Int
+
+        class WifiPeer(val peer: PeerInfo, angle: Float, distanceFactor: Float) : SonarNode(angle, distanceFactor) {
+            override val name: String = peer.userName
+            override val avatarIndex: Int = peer.avatarIndex
+        }
+
+        class BlePeer(val blePeer: BackgroundDiscoveryService.BlePeer, angle: Float, distanceFactor: Float) : SonarNode(angle, distanceFactor) {
+            override val name: String = blePeer.userName
+            override val avatarIndex: Int = blePeer.avatarIndex
+        }
+    }
+
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     fun AppScreen() {
@@ -511,6 +894,7 @@ class MainActivity : ComponentActivity() {
         val keyboardController = LocalSoftwareKeyboardController.current
 
         var tempName by remember { mutableStateOf(myNameState.value) }
+        var tempPhone by remember { mutableStateOf(myPhoneState.value) }
 
         val fileSelectorLauncher = rememberLauncherForActivityResult(
             contract = ActivityResultContracts.GetContent()
@@ -536,6 +920,10 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        // BottomSheet/Dialog states for interactive peer actions
+        var selectedPeerForActions by remember { mutableStateOf<PeerInfo?>(null) }
+        var selectedBlePeerForActions by remember { mutableStateOf<BackgroundDiscoveryService.BlePeer?>(null) }
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -557,6 +945,29 @@ class MainActivity : ComponentActivity() {
                 style = MaterialTheme.typography.bodyMedium,
                 color = Color.Gray,
                 modifier = Modifier.padding(bottom = 12.dp)
+            )
+
+            // Dynamic Radar/Sonar Scan Screen
+            Text(
+                text = "Escáner Sonal Moderno",
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 8.dp),
+                textAlign = TextAlign.Start
+            )
+
+            ModernSonarRadar(
+                myAvatarIndex = myAvatarState.value,
+                peers = peersState.value,
+                blePeers = blePeersMap.values.toList(),
+                onPeerClick = { peer ->
+                    selectedPeerForActions = peer
+                },
+                onBlePeerClick = { blePeer ->
+                    selectedBlePeerForActions = blePeer
+                },
+                modifier = Modifier.padding(bottom = 16.dp)
             )
 
             // Alert banner if WiFi is disabled
@@ -614,6 +1025,10 @@ class MainActivity : ComponentActivity() {
                             tempName = it
                             myNameState.value = it
                             wifiP2pHelper.setDeviceName(it)
+                            getSharedPreferences("conexion_prefs", Context.MODE_PRIVATE)
+                                .edit()
+                                .putString("user_name", it)
+                                .apply()
                         },
                         label = { Text("Nombre para mostrar") },
                         singleLine = true,
@@ -621,6 +1036,70 @@ class MainActivity : ComponentActivity() {
                         keyboardActions = KeyboardActions(onDone = { keyboardController?.hide() }),
                         modifier = Modifier.fillMaxWidth()
                     )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = tempPhone,
+                        onValueChange = {
+                            tempPhone = it
+                            myPhoneState.value = it
+                            getSharedPreferences("conexion_prefs", Context.MODE_PRIVATE)
+                                .edit()
+                                .putString("phone_number", it)
+                                .apply()
+                        },
+                        label = { Text("Número de teléfono") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(onDone = { keyboardController?.hide() }),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "Elige tu avatar de perfil:",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        AVATAR_DESIGNS.forEachIndexed { idx, design ->
+                            val isSelected = myAvatarState.value == idx
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
+                                        else Color.Transparent
+                                    )
+                                    .border(
+                                        if (isSelected) 2.dp else 1.dp,
+                                        if (isSelected) MaterialTheme.colorScheme.primary else Color.LightGray,
+                                        CircleShape
+                                    )
+                                    .padding(2.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        androidx.compose.ui.graphics.Brush.linearGradient(design.bgGradients)
+                                    )
+                                    .clickable {
+                                        myAvatarState.value = idx
+                                        getSharedPreferences("conexion_prefs", Context.MODE_PRIVATE)
+                                            .edit()
+                                            .putInt("avatar_index", idx)
+                                            .apply()
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(design.emoji, fontSize = 18.sp)
+                            }
+                        }
+                    }
 
                     Spacer(modifier = Modifier.height(16.dp))
                     HorizontalDivider()
@@ -800,6 +1279,111 @@ class MainActivity : ComponentActivity() {
             }
 
             Spacer(modifier = Modifier.height(24.dp))
+
+            // Chat Interface
+            if (isChatActive.value) {
+                var messageText by remember { mutableStateOf("") }
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 16.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Chat con " + (if (activeChatPeerName.value.isNotEmpty()) activeChatPeerName.value else "Dispositivo"),
+                                fontWeight = FontWeight.Bold,
+                                style = MaterialTheme.typography.titleMedium
+                            )
+                            IconButton(onClick = {
+                                isChatActive.value = false
+                                Toast.makeText(context, "Chat finalizado", Toast.LENGTH_SHORT).show()
+                            }) {
+                                Text("❌", fontSize = 16.sp)
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(200.dp)
+                                .background(Color(0xFFF1F5F9), RoundedCornerShape(8.dp))
+                                .padding(8.dp)
+                        ) {
+                            val scrollState = rememberScrollState()
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .verticalScroll(scrollState)
+                            ) {
+                                chatMessages.forEach { msg ->
+                                    val alignment = if (msg.isMe) Alignment.End else Alignment.Start
+                                    val bgCol = if (msg.isMe) MaterialTheme.colorScheme.primary else Color(0xFFE2E8F0)
+                                    val textCol = if (msg.isMe) Color.White else Color.Black
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 4.dp),
+                                        horizontalAlignment = alignment
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .background(bgCol, RoundedCornerShape(12.dp))
+                                                .padding(horizontal = 12.dp, vertical = 8.dp)
+                                        ) {
+                                            Text(text = msg.text, color = textCol, fontSize = 14.sp)
+                                        }
+                                    }
+                                }
+                            }
+                            LaunchedEffect(chatMessages.size) {
+                                scrollState.animateScrollTo(scrollState.maxValue)
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            OutlinedTextField(
+                                value = messageText,
+                                onValueChange = { messageText = it },
+                                modifier = Modifier.weight(1f),
+                                placeholder = { Text("Escribe un mensaje...") },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                                keyboardActions = KeyboardActions(onSend = {
+                                    if (messageText.trim().isNotEmpty()) {
+                                        sessionManager.sendChatMessage(messageText.trim())
+                                        chatMessages.add(ChatMessage(messageText.trim(), true))
+                                        messageText = ""
+                                    }
+                                })
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Button(
+                                onClick = {
+                                    if (messageText.trim().isNotEmpty()) {
+                                        sessionManager.sendChatMessage(messageText.trim())
+                                        chatMessages.add(ChatMessage(messageText.trim(), true))
+                                        messageText = ""
+                                    }
+                                }
+                            ) {
+                                Text("Enviar")
+                            }
+                        }
+                    }
+                }
+            }
 
             if (isConnected) {
                 Card(
@@ -988,6 +1572,194 @@ class MainActivity : ComponentActivity() {
                         TextButton(
                             onClick = { sendingCandidates.clear() }
                         ) {
+                            Text("Cancelar")
+                        }
+                    }
+                )
+            }
+
+            // Chat prompt dialog
+            chatRequestPrompt.value?.let { prompt ->
+                AlertDialog(
+                    onDismissRequest = {
+                        prompt.onDecision(false)
+                        chatRequestPrompt.value = null
+                    },
+                    title = { Text("Solicitud de Chat") },
+                    text = {
+                        Text(
+                            text = "${prompt.peerName} quiere iniciar un chat contigo. ¿Aceptas?",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                prompt.onDecision(true)
+                                chatRequestPrompt.value = null
+                            }
+                        ) {
+                            Text("Aceptar")
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(
+                            onClick = {
+                                prompt.onDecision(false)
+                                chatRequestPrompt.value = null
+                            }
+                        ) {
+                            Text("Rechazar")
+                        }
+                    }
+                )
+            }
+
+            // Contact request dialog
+            contactRequestPrompt.value?.let { prompt ->
+                AlertDialog(
+                    onDismissRequest = {
+                        prompt.onDecision(false)
+                        contactRequestPrompt.value = null
+                    },
+                    title = { Text("Intercambiar Contactos") },
+                    text = {
+                        Text(
+                            text = "${prompt.peerName} quiere intercambiar contactos mutuamente (Nombre y Teléfono). Esto guardará su contacto en tu libreta y enviará el tuyo si aceptas. ¿Proceder?",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                prompt.onDecision(true)
+                                contactRequestPrompt.value = null
+                            }
+                        ) {
+                            Text("Intercambiar")
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(
+                            onClick = {
+                                prompt.onDecision(false)
+                                contactRequestPrompt.value = null
+                            }
+                        ) {
+                            Text("Rechazar")
+                        }
+                    }
+                )
+            }
+
+            // Bottom Dialog sheets for tapping on sonar nodes
+            selectedPeerForActions?.let { peer ->
+                AlertDialog(
+                    onDismissRequest = { selectedPeerForActions = null },
+                    title = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            AvatarBubble(avatarIndex = peer.avatarIndex, size = 42.dp)
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Text(peer.userName)
+                        }
+                    },
+                    text = {
+                        Column {
+                            Text(
+                                text = "Elige qué acción deseas realizar con este dispositivo cercano:",
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
+                    },
+                    confirmButton = {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Button(
+                                onClick = {
+                                    val isP2pConn = currentConnectionInfo.value?.groupFormed ?: false
+                                    if (isP2pConn) {
+                                        // Request chat!
+                                        activeChatPeerName.value = peer.userName
+                                        sessionManager.sendChatRequest(myNameState.value)
+                                        Toast.makeText(context, "Solicitud de chat enviada...", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        Toast.makeText(context, "Conéctate al dispositivo primero para chatear.", Toast.LENGTH_SHORT).show()
+                                    }
+                                    selectedPeerForActions = null
+                                },
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                            ) {
+                                Text("💬 Iniciar Chat")
+                            }
+                            Button(
+                                onClick = {
+                                    val isP2pConn = currentConnectionInfo.value?.groupFormed ?: false
+                                    if (isP2pConn) {
+                                        sessionManager.sendContactRequest(myNameState.value)
+                                        Toast.makeText(context, "Solicitud de intercambio de contacto enviada...", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        Toast.makeText(context, "Conéctate al dispositivo primero para intercambiar contactos.", Toast.LENGTH_SHORT).show()
+                                    }
+                                    selectedPeerForActions = null
+                                },
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                            ) {
+                                Text("📇 Intercambiar Contacto Mutuo")
+                            }
+                            Button(
+                                onClick = {
+                                    wifiP2pHelper.connectToPeer(peer)
+                                    selectedPeerForActions = null
+                                },
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary)
+                            ) {
+                                Text("🔗 Conectar / Enviar Archivos")
+                            }
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { selectedPeerForActions = null }) {
+                            Text("Cancelar")
+                        }
+                    }
+                )
+            }
+
+            selectedBlePeerForActions?.let { bpeer ->
+                AlertDialog(
+                    onDismissRequest = { selectedBlePeerForActions = null },
+                    title = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            AvatarBubble(avatarIndex = bpeer.avatarIndex, size = 42.dp)
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Text(bpeer.userName)
+                        }
+                    },
+                    text = {
+                        Text(
+                            text = "Este dispositivo ha sido detectado de forma pasiva mediante búsqueda BLE. ¿Deseas intentar conectarte de forma segura?",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                val p2pPeer = wifiP2pHelper.findPeerByToken(bpeer.sessionToken)
+                                if (p2pPeer != null) {
+                                    wifiP2pHelper.connectToPeer(p2pPeer)
+                                } else {
+                                    Toast.makeText(context, "Buscando información de red segura...", Toast.LENGTH_SHORT).show()
+                                    wifiP2pHelper.startDiscoveryForToken(bpeer.sessionToken, bpeer.userName)
+                                }
+                                selectedBlePeerForActions = null
+                            }
+                        ) {
+                            Text("Conectar de forma segura")
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { selectedBlePeerForActions = null }) {
                             Text("Cancelar")
                         }
                     }
