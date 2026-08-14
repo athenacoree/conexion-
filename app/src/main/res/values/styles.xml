@@ -4,4 +4,15 @@
     <style name="Theme.Design.NoActionBar" parent="android:Theme.Material.NoActionBar">
         <!-- Customize your theme here. -->
     </style>
+
+    <!-- Beautiful translucent style for background-less share sheets -->
+    <style name="Theme.Design.Translucent" parent="Theme.Design.NoActionBar">
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:colorBackgroundCacheHint">@null</item>
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowAnimationStyle">@android:style/Animation.Dialog</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:backgroundDimEnabled">true</item>
+    </style>
 </resources>

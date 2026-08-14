@@ -278,26 +278,7 @@ class WifiP2pHelper(
     fun connectToPeer(peer: PeerInfo, force: Boolean = false) {
         if (manager == null || channel == null) return
 
-        val myAddr = myDeviceAddress
-        val peerAddr = peer.device.deviceAddress
-
-        if (!force && myAddr.isNotEmpty() && peerAddr.isNotEmpty()) {
-            if (myAddr.compareTo(peerAddr) > 0) {
-                Log.d(tag, "My address ($myAddr) > Peer address ($peerAddr). Postponing connection request so peer connects to me.")
-                onError("Esperando a que ${peer.userName} inicie la conexión...")
-
-                // Start a timeout coroutine to automatically fallback to connecting if group isn't formed in 6 seconds
-                scope.launch {
-                    delay(6000)
-                    if (!isGroupFormed) {
-                        Log.d(tag, "Timeout reached. Fallback to connecting directly to ${peer.userName}.")
-                        onError("Conexión automática demorada. Reintentando conectar de forma forzada...")
-                        connectToPeer(peer, force = true)
-                    }
-                }
-                return
-            }
-        }
+        Log.d(tag, "Connecting instantly to peer: ${peer.userName} without postponing delay.")
 
         val config = WifiP2pConfig().apply {
             deviceAddress = peer.device.deviceAddress
