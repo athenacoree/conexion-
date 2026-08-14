@@ -11,8 +11,13 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
 
     companion object {
         private const val DATABASE_NAME = "conexion.db"
-        private const val DATABASE_VERSION = 2
+        private const val DATABASE_VERSION = 3
         private const val TAG = "DatabaseHelper"
+
+        // Starred Devices Table
+        private const val TABLE_STARRED = "starred_devices"
+        private const val COL_STAR_DEVICE_ID = "device_id"
+        private const val COL_STAR_TIMESTAMP = "timestamp"
 
         // Profile Table
         private const val TABLE_PROFILE = "profile"
@@ -98,19 +103,70 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             )
         """.trimIndent()
 
+        val createStarredTable = """
+            CREATE TABLE $TABLE_STARRED (
+                $COL_STAR_DEVICE_ID TEXT PRIMARY KEY,
+                $COL_STAR_TIMESTAMP INTEGER
+            )
+        """.trimIndent()
+
         db.execSQL(createProfileTable)
         db.execSQL(createPeersTable)
         db.execSQL(createChatsTable)
         db.execSQL(createTransfersTable)
+        db.execSQL(createStarredTable)
         Log.d(TAG, "Database tables created.")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        db.execSQL("DROP TABLE IF EXISTS $TABLE_PROFILE")
-        db.execSQL("DROP TABLE IF EXISTS $TABLE_PEERS")
-        db.execSQL("DROP TABLE IF EXISTS $TABLE_CHATS")
-        db.execSQL("DROP TABLE IF EXISTS $TABLE_TRANSFERS")
-        onCreate(db)
+        if (oldVersion < 3) {
+            db.execSQL("""
+                CREATE TABLE IF NOT EXISTS $TABLE_STARRED (
+                    $COL_STAR_DEVICE_ID TEXT PRIMARY KEY,
+                    $COL_STAR_TIMESTAMP INTEGER
+                )
+            """.trimIndent())
+        }
+    }
+
+    // --- Starred Devices Operations ---
+    fun toggleStarDevice(deviceId: String): Boolean {
+        if (deviceId.isEmpty()) return false
+        val db = writableDatabase
+        val isStarred = isDeviceStarred(deviceId)
+        if (isStarred) {
+            db.delete(TABLE_STARRED, "$COL_STAR_DEVICE_ID = ?", arrayOf(deviceId))
+            return false
+        } else {
+            val values = ContentValues().apply {
+                put(COL_STAR_DEVICE_ID, deviceId)
+                put(COL_STAR_TIMESTAMP, System.currentTimeMillis())
+            }
+            db.insertWithOnConflict(TABLE_STARRED, null, values, SQLiteDatabase.CONFLICT_REPLACE)
+            return true
+        }
+    }
+
+    fun isDeviceStarred(deviceId: String): Boolean {
+        if (deviceId.isEmpty()) return false
+        val db = readableDatabase
+        val cursor = db.query(TABLE_STARRED, arrayOf(COL_STAR_DEVICE_ID), "$COL_STAR_DEVICE_ID = ?", arrayOf(deviceId), null, null, null)
+        cursor.use {
+            return it.count > 0
+        }
+    }
+
+    fun getStarredDeviceIds(): Set<String> {
+        val set = mutableSetOf<String>()
+        val db = readableDatabase
+        val cursor = db.query(TABLE_STARRED, arrayOf(COL_STAR_DEVICE_ID), null, null, null, null, null)
+        cursor.use {
+            while (it.moveToNext()) {
+                val id = it.getString(0)
+                if (!id.isNullOrEmpty()) set.add(id)
+            }
+        }
+        return set
     }
 
     // --- My Persistent Device Identity Operations ---
