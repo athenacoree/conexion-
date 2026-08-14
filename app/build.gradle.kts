@@ -157,6 +157,8 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+            excludes += "META-INF/INDEX.LIST"
+            excludes += "META-INF/io.netty.versions.properties"
         }
     }
 }
@@ -173,6 +175,14 @@ dependencies {
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.android)
     implementation("io.coil-kt:coil-compose:2.6.0")
+
+    // Ktor Server 2.3.12 dependencies
+    implementation("io.ktor:ktor-server-core:2.3.12")
+    implementation("io.ktor:ktor-server-netty:2.3.12")
+    implementation("io.ktor:ktor-server-websockets:2.3.12")
+
+    // QR Code generation
+    implementation("com.google.zxing:core:3.5.1")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
