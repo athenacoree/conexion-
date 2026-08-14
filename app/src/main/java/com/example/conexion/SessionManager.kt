@@ -33,6 +33,12 @@ class SessionManager(
     var activePeerDeviceId: String = ""
     var activePeerName: String = ""
 
+    // Stream & Clipboard callbacks
+    var onStreamRequestReceived: ((type: String, peerDeviceId: String, peerName: String, decisionCallback: (Boolean) -> Unit) -> Unit)? = null
+    var onStreamRequestResponse: ((type: String, accepted: Boolean) -> Unit)? = null
+    var onStreamStopped: ((type: String) -> Unit)? = null
+    var onClipboardDataReceived: ((text: String) -> Unit)? = null
+
     // Screen sharing callbacks
     var onScreenShareStarted: ((peerName: String, resolution: String, fps: Int, quality: String) -> Unit)? = null
     var onScreenShareStopped: (() -> Unit)? = null
@@ -119,6 +125,49 @@ class SessionManager(
                 if (peerId.isNotEmpty()) {
                     activePeerDeviceId = peerId
                     Log.d(tag, "Peer identified with persistent deviceId: $peerId")
+                }
+            }
+            "STREAM_REQ_AUDIO" -> {
+                val peerId = parts.getOrNull(1) ?: ""
+                val peerName = parts.getOrNull(2) ?: "Dispositivo"
+                if (peerId.isNotEmpty()) activePeerDeviceId = peerId
+                activePeerName = peerName
+
+                scope.launch(Dispatchers.Main) {
+                    onStreamRequestReceived?.invoke("AUDIO", peerId, peerName) { accepted ->
+                        sendRaw("STREAM_RESP|AUDIO|${if (accepted) "ACCEPT" else "REJECT"}")
+                    }
+                }
+            }
+            "STREAM_REQ_SCREEN" -> {
+                val peerId = parts.getOrNull(1) ?: ""
+                val peerName = parts.getOrNull(2) ?: "Dispositivo"
+                if (peerId.isNotEmpty()) activePeerDeviceId = peerId
+                activePeerName = peerName
+
+                scope.launch(Dispatchers.Main) {
+                    onStreamRequestReceived?.invoke("SCREEN", peerId, peerName) { accepted ->
+                        sendRaw("STREAM_RESP|SCREEN|${if (accepted) "ACCEPT" else "REJECT"}")
+                    }
+                }
+            }
+            "STREAM_RESP" -> {
+                val type = parts.getOrNull(1) ?: "AUDIO"
+                val status = parts.getOrNull(2) ?: "REJECT"
+                scope.launch(Dispatchers.Main) {
+                    onStreamRequestResponse?.invoke(type, status == "ACCEPT")
+                }
+            }
+            "STREAM_STOP" -> {
+                val type = parts.getOrNull(1) ?: "AUDIO"
+                scope.launch(Dispatchers.Main) {
+                    onStreamStopped?.invoke(type)
+                }
+            }
+            "CLIPBOARD_DATA" -> {
+                val clipText = parts.getOrNull(1) ?: ""
+                scope.launch(Dispatchers.Main) {
+                    onClipboardDataReceived?.invoke(clipText)
                 }
             }
             "SCREEN_SHARE_START" -> {
@@ -231,6 +280,22 @@ class SessionManager(
 
     fun sendScreenShareStop() {
         sendRaw("SCREEN_SHARE_STOP")
+    }
+
+    fun sendStreamRequest(type: String, myName: String) {
+        if (type == "SCREEN") {
+            sendRaw("STREAM_REQ_SCREEN|$myDeviceId|$myName")
+        } else {
+            sendRaw("STREAM_REQ_AUDIO|$myDeviceId|$myName")
+        }
+    }
+
+    fun sendStreamStop(type: String) {
+        sendRaw("STREAM_STOP|$type")
+    }
+
+    fun sendClipboardData(text: String) {
+        sendRaw("CLIPBOARD_DATA|$text")
     }
 
     private fun sendRaw(payload: String) {

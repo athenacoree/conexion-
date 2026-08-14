@@ -26,6 +26,21 @@ object HapticManager {
     }
 
     /**
+     * Proximity vibration pulse triggered when devices are within ~15 cm (close proximity).
+     */
+    fun performProximityHaptic(context: Context) {
+        val vibrator = getVibrator(context) ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val timings = longArrayOf(0, 30, 40, 30, 40, 30)
+            val amplitudes = intArrayOf(0, 200, 0, 220, 0, 255)
+            vibrator.vibrate(VibrationEffect.createWaveform(timings, amplitudes, -1))
+        } else {
+            @Suppress("DEPRECATION")
+            vibrator.vibrate(longArrayOf(0, 30, 40, 30, 40, 30), -1)
+        }
+    }
+
+    /**
      * Light haptic click for button presses / sonar nodes tap
      */
     fun performLightClick(context: Context) {
