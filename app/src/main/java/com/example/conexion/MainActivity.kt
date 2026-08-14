@@ -28,6 +28,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -51,6 +52,7 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
@@ -183,6 +185,7 @@ class MainActivity : ComponentActivity() {
 
     // App Theme State (Feature 2)
     private var currentThemeIndex = mutableStateOf(0)
+    private var isDarkMode = mutableStateOf(false)
 
     data class IncomingFilePrompt(
         val fileName: String,
@@ -236,13 +239,16 @@ class MainActivity : ComponentActivity() {
         dbHelper = DatabaseHelper(this)
         myDeviceIdState.value = dbHelper.getOrCreateMyDeviceId(this)
 
+        val prefs = getSharedPreferences("conexion_prefs", Context.MODE_PRIVATE)
+        currentThemeIndex.value = prefs.getInt("theme_index", 0)
+        isDarkMode.value = prefs.getBoolean("dark_mode", false)
+
         val savedProf = dbHelper.getProfile()
         if (savedProf != null) {
             myNameState.value = savedProf.first
             myPhoneState.value = savedProf.second
             myAvatarState.value = savedProf.third
         } else {
-            val prefs = getSharedPreferences("conexion_prefs", Context.MODE_PRIVATE)
             val defaultName = prefs.getString("user_name", "Mi Dispositivo") ?: "Mi Dispositivo"
             val defaultAvatar = prefs.getInt("avatar_index", 0)
             val defaultPhone = prefs.getString("phone_number", "") ?: ""
@@ -519,7 +525,7 @@ class MainActivity : ComponentActivity() {
         handleShareIntent(intent)
 
         setContent {
-            AppTheme(themeIndex = currentThemeIndex.value) {
+            AppTheme(themeIndex = currentThemeIndex.value, isDark = isDarkMode.value) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
@@ -871,294 +877,7 @@ class MainActivity : ComponentActivity() {
         return size
     }
 
-    // --- App Themes (Feature 2) ---
-    data class ThemePreset(
-        val name: String,
-        val primary: Color,
-        val secondary: Color,
-        val background: Color,
-        val surface: Color,
-        val gradient: List<Color>
-    )
-
-    companion object {
-        val THEME_PRESETS = listOf(
-            ThemePreset("Purple Aurora", Color(0xFF8B5CF6), Color(0xFFEC4899), Color(0xFF0F172A), Color(0xFF1E293B), listOf(Color(0xFF8B5CF6), Color(0xFFEC4899))),
-            ThemePreset("Midnight Glass", Color(0xFF3B82F6), Color(0xFF06B6D4), Color(0xFF020617), Color(0xFF0F172A), listOf(Color(0xFF3B82F6), Color(0xFF06B6D4))),
-            ThemePreset("Emerald Glow", Color(0xFF10B981), Color(0xFF059669), Color(0xFF064E3B), Color(0xFF047857), listOf(Color(0xFF10B981), Color(0xFF34D399))),
-            ThemePreset("Cyber Neon", Color(0xFFF43F5E), Color(0xFF8B5CF6), Color(0xFF18181B), Color(0xFF27272A), listOf(Color(0xFFF43F5E), Color(0xFFA855F7)))
-        )
-
-        val AVATAR_DESIGNS = listOf(
-            AvatarDesign("🦁", listOf(Color(0xFFFF9800), Color(0xFFFF5722)), Color.White),
-            AvatarDesign("🦄", listOf(Color(0xFFE91E63), Color(0xFF9C27B0)), Color.White),
-            AvatarDesign("🐨", listOf(Color(0xFF607D8B), Color(0xFF90A4AE)), Color.White),
-            AvatarDesign("🐼", listOf(Color(0xFF212121), Color(0xFF757575)), Color.White),
-            AvatarDesign("🦊", listOf(Color(0xFFFF5722), Color(0xFFFFC107)), Color.White),
-            AvatarDesign("🐙", listOf(Color(0xFF2196F3), Color(0xFF00BCD4)), Color.White),
-            AvatarDesign("🦖", listOf(Color(0xFF4CAF50), Color(0xFF8BC34A)), Color.White),
-            AvatarDesign("🦉", listOf(Color(0xFF795548), Color(0xFFA1887F)), Color.White)
-        )
-    }
-
-    data class AvatarDesign(val emoji: String, val bgGradients: List<Color>, val contentColor: Color)
-
-    @Composable
-    fun AppTheme(themeIndex: Int, content: @Composable () -> Unit) {
-        val preset = THEME_PRESETS.getOrElse(themeIndex) { THEME_PRESETS[0] }
-        val colorScheme = darkColorScheme(
-            primary = preset.primary,
-            secondary = preset.secondary,
-            background = preset.background,
-            surface = preset.surface,
-            surfaceVariant = preset.surface.copy(alpha = 0.8f)
-        )
-        MaterialTheme(colorScheme = colorScheme, content = content)
-    }
-
-    @Composable
-    fun AvatarBubble(
-        avatarIndex: Int,
-        size: androidx.compose.ui.unit.Dp,
-        modifier: Modifier = Modifier
-    ) {
-        val design = AVATAR_DESIGNS.getOrElse(avatarIndex) { AVATAR_DESIGNS[0] }
-        Box(
-            modifier = modifier
-                .size(size)
-                .clip(CircleShape)
-                .background(Brush.linearGradient(design.bgGradients))
-                .border(2.dp, Color.White.copy(alpha = 0.8f), CircleShape),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = design.emoji,
-                fontSize = (size.value * 0.5f).sp
-            )
-        }
-    }
-
-    // Modern AirDrop Radar
-    @Composable
-    fun ModernSonarRadar(
-        myAvatarIndex: Int,
-        peers: List<PeerInfo>,
-        blePeers: List<BackgroundDiscoveryService.BlePeer>,
-        onPeerClick: (PeerInfo) -> Unit,
-        onBlePeerClick: (BackgroundDiscoveryService.BlePeer) -> Unit,
-        modifier: Modifier = Modifier
-    ) {
-        val context = LocalContext.current
-        val infiniteTransition = rememberInfiniteTransition()
-
-        val pulse1 = infiniteTransition.animateFloat(
-            initialValue = 0.8f,
-            targetValue = 2.2f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(3500, easing = FastOutSlowInEasing),
-                repeatMode = RepeatMode.Restart
-            )
-        )
-        val alpha1 = infiniteTransition.animateFloat(
-            initialValue = 0.35f,
-            targetValue = 0f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(3500, easing = FastOutSlowInEasing),
-                repeatMode = RepeatMode.Restart
-            )
-        )
-
-        val pulse2 = infiniteTransition.animateFloat(
-            initialValue = 0.8f,
-            targetValue = 2.2f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(3500, easing = FastOutSlowInEasing),
-                repeatMode = RepeatMode.Restart,
-                initialStartOffset = StartOffset(1750)
-            )
-        )
-        val alpha2 = infiniteTransition.animateFloat(
-            initialValue = 0.35f,
-            targetValue = 0f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(3500, easing = FastOutSlowInEasing),
-                repeatMode = RepeatMode.Restart,
-                initialStartOffset = StartOffset(1750)
-            )
-        )
-
-        val accentColor = Color(0xFF007AFF)
-
-        Box(
-            modifier = modifier
-                .fillMaxWidth()
-                .height(290.dp)
-                .clip(RoundedCornerShape(28.dp))
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            Color(0xFF1C1C1E),
-                            Color(0xFF0F0F11)
-                        )
-                    )
-                )
-                .border(
-                    width = 1.dp,
-                    brush = Brush.verticalGradient(
-                        colors = listOf(Color.White.copy(alpha = 0.15f), Color.Transparent)
-                    ),
-                    shape = RoundedCornerShape(28.dp)
-                ),
-            contentAlignment = Alignment.Center
-        ) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val center = Offset(size.width / 2, size.height / 2)
-                val baseRadius = 45.dp.toPx()
-
-                // Liquid halo rings
-                drawCircle(
-                    color = accentColor,
-                    radius = baseRadius * pulse1.value,
-                    center = center,
-                    style = Stroke(width = 2.dp.toPx()),
-                    alpha = alpha1.value
-                )
-
-                drawCircle(
-                    color = accentColor,
-                    radius = baseRadius * pulse2.value,
-                    center = center,
-                    style = Stroke(width = 2.dp.toPx()),
-                    alpha = alpha2.value
-                )
-
-                // Concentric sleek rings
-                for (r in listOf(60.dp.toPx(), 105.dp.toPx(), 140.dp.toPx())) {
-                    drawCircle(
-                        color = Color.White.copy(alpha = 0.06f),
-                        radius = r,
-                        center = center,
-                        style = Stroke(width = 1.5.dp.toPx())
-                    )
-                }
-            }
-
-            // Core user avatar badge
-            Box(
-                modifier = Modifier
-                    .size(64.dp)
-                    .clip(CircleShape)
-                    .background(Color(0xFF2C2C2E))
-                    .border(3.dp, accentColor, CircleShape),
-                contentAlignment = Alignment.Center
-            ) {
-                AvatarBubble(avatarIndex = myAvatarIndex, size = 56.dp)
-            }
-
-            val allNodes = remember(peers, blePeers) {
-                val list = mutableListOf<SonarNode>()
-                peers.forEachIndexed { idx, p ->
-                    val angle = 30f + idx * 80f
-                    val distanceFactor = 0.45f + (idx % 2) * 0.25f
-                    list.add(SonarNode.WifiPeer(p, angle, distanceFactor))
-                }
-                var bleCount = 0
-                blePeers.forEach { bp ->
-                    if (peers.none { it.sessionToken == bp.sessionToken }) {
-                        val angle = 120f + bleCount * 90f
-                        val distanceFactor = 0.55f + (bleCount % 2) * 0.25f
-                        list.add(SonarNode.BlePeer(bp, angle, distanceFactor))
-                        bleCount++
-                    }
-                }
-                list
-            }
-
-            allNodes.forEach { node ->
-                val angleRad = Math.toRadians(node.angle.toDouble())
-                val distancePx = 105 * node.distanceFactor
-
-                val offsetX = (distancePx * Math.cos(angleRad)).toFloat()
-                val offsetY = (distancePx * Math.sin(angleRad)).toFloat()
-
-                Box(
-                    modifier = Modifier
-                        .offset(x = offsetX.dp, y = offsetY.dp)
-                        .clickable {
-                            HapticManager.performLightClick(context)
-                            when (node) {
-                                is SonarNode.WifiPeer -> onPeerClick(node.peer)
-                                is SonarNode.BlePeer -> onBlePeerClick(node.blePeer)
-                            }
-                        },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(48.dp)
-                                .clip(CircleShape)
-                                .background(Color(0xFF2C2C2E))
-                                .border(
-                                    2.dp,
-                                    if (node is SonarNode.WifiPeer) Color(0xFF30D158) else Color(0xFF007AFF),
-                                    CircleShape
-                                ),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            AvatarBubble(avatarIndex = node.avatarIndex, size = 42.dp)
-                        }
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Box(
-                            modifier = Modifier
-                                .background(Color(0xFF1C1C1E).copy(alpha = 0.90f), RoundedCornerShape(12.dp))
-                                .border(0.5.dp, Color.White.copy(alpha = 0.2f), RoundedCornerShape(12.dp))
-                                .padding(horizontal = 6.dp, vertical = 2.dp)
-                        ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text(
-                                    text = node.name,
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color.White,
-                                    maxLines = 1
-                                )
-                                Text(
-                                    text = node.formattedDistance,
-                                    fontSize = 9.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = Color(0xFF30D158)
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    sealed class SonarNode(val angle: Float, val distanceFactor: Float) {
-        abstract val name: String
-        abstract val avatarIndex: Int
-        abstract val formattedDistance: String
-
-        class WifiPeer(val peer: PeerInfo, angle: Float, distanceFactor: Float) : SonarNode(angle, distanceFactor) {
-            override val name: String = peer.userName
-            override val avatarIndex: Int = peer.avatarIndex
-            override val formattedDistance: String = peer.formattedDistance
-        }
-
-        class BlePeer(val blePeer: BackgroundDiscoveryService.BlePeer, angle: Float, distanceFactor: Float) : SonarNode(angle, distanceFactor) {
-            override val name: String = blePeer.userName
-            override val avatarIndex: Int = blePeer.avatarIndex
-            override val formattedDistance: String = blePeer.formattedDistance
-        }
-    }
-
-    // QR Code Generator Function for Feature 1
+    // QR Code Generator Function for AirShare Web
     private fun generateQrCodeBitmap(content: String): Bitmap? {
         return try {
             val writer = QRCodeWriter()
@@ -1182,30 +901,210 @@ class MainActivity : ComponentActivity() {
     @Composable
     fun AppScreen() {
         val context = LocalContext.current
-        var currentTab by remember { mutableStateOf(0) } // 0: Radar, 1: Chats, 2: Transferencias, 3: Transmisión, 4: Ajustes
+        var currentTab by remember { mutableStateOf(0) } // 0: Radar, 1: Chats, 2: Envíos, 3: Media, 4: Ajustes
+
+        var isAirDropSheetOpen by remember { mutableStateOf(false) }
+
+        val selectFileLauncher = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.GetContent()
+        ) { uri: Uri? ->
+            if (uri != null) {
+                val info = currentConnectionInfo.value
+                val hostAddress = if (info?.isGroupOwner == true) {
+                    fileTransferManager.lastClientIpAddress ?: "192.168.49.2"
+                } else {
+                    info?.groupOwnerAddress?.hostAddress ?: "192.168.49.1"
+                }
+                transferStartTime = System.currentTimeMillis()
+                val fName = getFileNameFromUri(context, uri)
+                transferFileName.value = fName
+                transferProgress.value = 0f
+                isTransferring.value = true
+                isTransferCompleted.value = false
+                lifecycleScope.launch {
+                    fileTransferManager.sendFile(hostAddress, uri, isAutoPlayAudioEnabled.value)
+                }
+                Toast.makeText(context, "Enviando $fName...", Toast.LENGTH_SHORT).show()
+            }
+        }
 
         // Peer Action dialog states
         var selectedPeerForActions by remember { mutableStateOf<PeerInfo?>(null) }
         var selectedBlePeerForActions by remember { mutableStateOf<BackgroundDiscoveryService.BlePeer?>(null) }
 
         Column(modifier = Modifier.fillMaxSize()) {
-            // Main Content Area based on Selected Bottom Tab
+            // Dynamic Island Capsule Header Bar
+            DynamicIslandBar(
+                isDark = isDarkMode.value,
+                isConnected = currentConnectionInfo.value?.groupFormed ?: false,
+                connectedPeerName = currentConnectionInfo.value?.groupOwnerAddress?.hostAddress ?: "",
+                isTransferring = isTransferring.value,
+                transferProgress = transferProgress.value,
+                transferSpeed = transferSpeedState.value,
+                onToggleTheme = {
+                    isDarkMode.value = !isDarkMode.value
+                    getSharedPreferences("conexion_prefs", Context.MODE_PRIVATE)
+                        .edit()
+                        .putBoolean("dark_mode", isDarkMode.value)
+                        .apply()
+                },
+                onOpenAirDrop = {
+                    isAirDropSheetOpen = true
+                }
+            )
+
+            // Main Tab Content Area
             Box(modifier = Modifier.weight(1f)) {
                 when (currentTab) {
                     0 -> RadarTabScreen(
+                        myAvatarIndex = myAvatarState.value,
+                        myName = myNameState.value,
+                        peers = peersState.value,
+                        blePeers = blePeersMap.values.toList(),
+                        isDark = isDarkMode.value,
+                        isConnected = currentConnectionInfo.value?.groupFormed ?: false,
+                        connectedDeviceName = "",
+                        connectedDeviceAddress = currentConnectionInfo.value?.groupOwnerAddress?.hostAddress ?: "",
+                        isSearching = false,
+                        onStartDiscovery = {
+                            wifiP2pHelper.startDiscovery()
+                            Toast.makeText(context, "Buscando dispositivos...", Toast.LENGTH_SHORT).show()
+                        },
+                        onSendAcousticPulse = {
+                            val token = generateSessionToken()
+                            audioBeaconEmitter?.start(token)
+                            HapticManager.performIPhoneHaptic(context)
+                            Toast.makeText(context, "Emitiendo pulso ultrasónico...", Toast.LENGTH_SHORT).show()
+                        },
+                        onDisconnect = {
+                            wifiP2pHelper.disconnect()
+                        },
                         onPeerSelected = { selectedPeerForActions = it },
                         onBlePeerSelected = { selectedBlePeerForActions = it }
                     )
-                    1 -> ChatsTabScreen()
-                    2 -> TransfersTabScreen()
-                    3 -> TransmissionTabScreen()
-                    4 -> SettingsTabScreen()
+                    1 -> ChatsTabScreen(
+                        myAvatarIndex = myAvatarState.value,
+                        myName = myNameState.value,
+                        activeChatPeerDeviceId = activeChatPeerDeviceId.value,
+                        activeChatPeerName = activeChatPeerName.value,
+                        chatMessages = chatMessages.toList(),
+                        peers = peersState.value,
+                        blePeers = blePeersMap.values.toList(),
+                        isDark = isDarkMode.value,
+                        onSelectPeerToChat = { devId, name ->
+                            activeChatPeerDeviceId.value = devId
+                            activeChatPeerName.value = name
+                            loadChatMessagesForPeer(devId)
+                        },
+                        onCloseChat = {
+                            activeChatPeerDeviceId.value = ""
+                        },
+                        onSendMessage = { text ->
+                            val m = sessionManager.sendChatMessage(text, myNameState.value, activeChatPeerDeviceId.value)
+                            chatMessages.add(m)
+                        },
+                        onSendClipboard = {
+                            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                            val clipData = clipboard.primaryClip
+                            if (clipData != null && clipData.itemCount > 0) {
+                                val text = clipData.getItemAt(0).text?.toString() ?: ""
+                                if (text.isNotEmpty()) {
+                                    sessionManager.sendClipboardData(text)
+                                    HapticManager.performLightClick(this@MainActivity)
+                                    Toast.makeText(this@MainActivity, "📋 Portapapeles enviado", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        },
+                        onPeerSelected = { selectedPeerForActions = it },
+                        onBlePeerSelected = { selectedBlePeerForActions = it }
+                    )
+                    2 -> TransfersTabScreen(
+                        isTransferring = isTransferring.value,
+                        transferFileName = transferFileName.value,
+                        transferProgress = transferProgress.value,
+                        transferSpeed = transferSpeedState.value,
+                        transferEta = transferEtaState.value,
+                        isDark = isDarkMode.value,
+                        transferHistory = dbHelper.getTransferHistory(),
+                        onSelectFileToSend = {
+                            selectFileLauncher.launch("*/*")
+                        }
+                    )
+                    3 -> TransmissionTabScreen(
+                        isDark = isDarkMode.value,
+                        isScreenShareEnabled = isScreenShareEnabled.value,
+                        isReceivingScreenStream = isReceivingScreenStream.value,
+                        liveScreenFrameBitmap = liveScreenFrameBitmap.value,
+                        isAirShareServerActive = isAirShareServerActive.value,
+                        airShareLocalIp = airShareLocalIp.value,
+                        qrBitmap = if (isAirShareServerActive.value) generateQrCodeBitmap("http://${airShareLocalIp.value}:8989") else null,
+                        onToggleScreenShare = { isScreenShareEnabled.value = it },
+                        onStartScreenStreaming = {
+                            val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
+                            mediaProjectionLauncher.launch(projectionManager.createScreenCaptureIntent())
+                        },
+                        onStartAudioStreaming = {
+                            val info = currentConnectionInfo.value
+                            val hostAddress = if (info?.isGroupOwner == true) {
+                                fileTransferManager.lastClientIpAddress ?: "192.168.49.2"
+                            } else {
+                                info?.groupOwnerAddress?.hostAddress ?: "192.168.49.1"
+                            }
+                            streamManager.startAudioClient(hostAddress)
+                            Toast.makeText(this@MainActivity, "Transmisión de micrófono en vivo iniciada", Toast.LENGTH_SHORT).show()
+                        },
+                        onToggleAirShareServer = {
+                            toggleAirShareServer()
+                        }
+                    )
+                    4 -> SettingsTabScreen(
+                        myName = myNameState.value,
+                        myPhone = myPhoneState.value,
+                        myAvatarIndex = myAvatarState.value,
+                        currentThemeIndex = currentThemeIndex.value,
+                        isDarkMode = isDarkMode.value,
+                        isBgDiscoveryEnabled = isBgDiscoveryEnabled.value,
+                        onSaveProfile = { name, phone, avatar ->
+                            myNameState.value = name
+                            myPhoneState.value = phone
+                            myAvatarState.value = avatar
+                            dbHelper.saveProfile(name, phone, avatar, myDeviceIdState.value)
+                            getSharedPreferences("conexion_prefs", Context.MODE_PRIVATE)
+                                .edit()
+                                .putString("user_name", name)
+                                .putString("phone_number", phone)
+                                .putInt("avatar_index", avatar)
+                                .apply()
+                        },
+                        onSelectTheme = { idx ->
+                            currentThemeIndex.value = idx
+                            getSharedPreferences("conexion_prefs", Context.MODE_PRIVATE)
+                                .edit()
+                                .putInt("theme_index", idx)
+                                .apply()
+                        },
+                        onToggleDarkMode = { dark ->
+                            isDarkMode.value = dark
+                            getSharedPreferences("conexion_prefs", Context.MODE_PRIVATE)
+                                .edit()
+                                .putBoolean("dark_mode", dark)
+                                .apply()
+                        },
+                        onToggleBgDiscovery = { enabled ->
+                            isBgDiscoveryEnabled.value = enabled
+                            getSharedPreferences("conexion_prefs", Context.MODE_PRIVATE)
+                                .edit()
+                                .putBoolean("bg_discovery_enabled", enabled)
+                                .apply()
+                            if (enabled) startBgDiscoveryService() else stopBgDiscoveryService()
+                        }
+                    )
                 }
             }
 
             // Modern iOS Glassmorphism Bottom Navigation Bar
             NavigationBar(
-                containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
+                containerColor = if (isDarkMode.value) Color(0xFF161F2E).copy(alpha = 0.95f) else Color(0xFFFFFFFF).copy(alpha = 0.95f),
                 tonalElevation = 8.dp
             ) {
                 val navItems = listOf(
@@ -1229,17 +1128,37 @@ class MainActivity : ComponentActivity() {
                             Text(
                                 text = label,
                                 fontSize = 11.sp,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
                             )
                         },
                         colors = NavigationBarItemDefaults.colors(
                             selectedIconColor = MaterialTheme.colorScheme.primary,
-                            indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
+                            indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
                         )
                     )
                 }
             }
         }
+
+        // AirDrop Bottom Sheet Overlay
+        AirDropBottomSheet(
+            isOpen = isAirDropSheetOpen,
+            onDismiss = { isAirDropSheetOpen = false },
+            myName = myNameState.value,
+            myAvatarIndex = myAvatarState.value,
+            discoveredPeers = peersState.value,
+            blePeers = blePeersMap.values.toList(),
+            onPeerSelected = { peer ->
+                isAirDropSheetOpen = false
+                selectedPeerForActions = peer
+            },
+            onBlePeerSelected = { bpeer ->
+                isAirDropSheetOpen = false
+                selectedBlePeerForActions = bpeer
+            },
+            isSearching = false,
+            onToggleSearch = { wifiP2pHelper.startDiscovery() }
+        )
 
         // Connection Prompts & Action Dialogs
         connectionPromptPeer.value?.let { peer ->
@@ -1498,742 +1417,8 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // --- TAB 0: Radar & Escáner ---
-    @Composable
-    fun RadarTabScreen(
-        onPeerSelected: (PeerInfo) -> Unit,
-        onBlePeerSelected: (BackgroundDiscoveryService.BlePeer) -> Unit
-    ) {
-        val context = LocalContext.current
-        val isConnected = currentConnectionInfo.value?.groupFormed ?: false
 
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(16.dp)
-                .verticalScroll(rememberScrollState()),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text(
-                text = "Escáner Sonal y Búsqueda",
-                style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(bottom = 4.dp)
-            )
-            Text(
-                text = "Detección rápida de dispositivos cercanos por Wi-Fi Direct y BLE",
-                style = MaterialTheme.typography.bodySmall,
-                color = Color.Gray,
-                modifier = Modifier.padding(bottom = 12.dp)
-            )
 
-            ModernSonarRadar(
-                myAvatarIndex = myAvatarState.value,
-                peers = peersState.value,
-                blePeers = blePeersMap.values.toList(),
-                onPeerClick = onPeerSelected,
-                onBlePeerClick = onBlePeerSelected
-            )
 
-            Spacer(modifier = Modifier.height(16.dp))
 
-            // Proximity Sonar Bump Feature Card (Feature 3)
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f))
-            ) {
-                Row(
-                    modifier = Modifier.padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("📡 Acoustic Sonar Bump", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                        Text("Emite un pulso ultrasónico para choque de teléfonos y sincronización rápida.", fontSize = 12.sp, color = Color.Gray)
-                    }
-                    Button(
-                        onClick = {
-                            val token = generateSessionToken()
-                            audioBeaconEmitter?.start(token)
-                            HapticManager.performIPhoneHaptic(context)
-                            Toast.makeText(context, "Emitiendo tono ultrasónico...", Toast.LENGTH_SHORT).show()
-                        }
-                    ) {
-                        Text("Emitir Pulso")
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            Button(
-                onClick = {
-                    wifiP2pHelper.startDiscovery()
-                    HapticManager.performLightClick(context)
-                    Toast.makeText(context, "Buscando dispositivos cercanos...", Toast.LENGTH_SHORT).show()
-                },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Escanear Ahora")
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = if (isConnected) Color(0xFF10B981).copy(alpha = 0.2f) else Color(0xFFEF4444).copy(alpha = 0.2f)
-                )
-            ) {
-                Row(
-                    modifier = Modifier.padding(16.dp).fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Column {
-                        Text(
-                            text = if (isConnected) "Estado: Conectado" else "Estado: Desconectado",
-                            fontWeight = FontWeight.Bold,
-                            color = if (isConnected) Color(0xFF10B981) else Color(0xFFEF4444)
-                        )
-                        if (isConnected) {
-                            Text("IP: ${currentConnectionInfo.value?.groupOwnerAddress?.hostAddress}", fontSize = 12.sp, color = Color.Gray)
-                        }
-                    }
-                    if (isConnected) {
-                        Button(
-                            onClick = { wifiP2pHelper.disconnect() },
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-                        ) {
-                            Text("Desconectar")
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // --- TAB 1: Chats Screen (iPhone Messenger Style) ---
-    @Composable
-    fun ChatsTabScreen() {
-        val context = LocalContext.current
-        var messageInput by remember { mutableStateOf("") }
-        var chatThreads by remember { mutableStateOf(emptyList<DbChatThread>()) }
-
-        LaunchedEffect(Unit) {
-            chatThreads = dbHelper.getAllChatConversations()
-        }
-
-        if (activeChatPeerDeviceId.value.isEmpty()) {
-            // Chat Conversation List
-            Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-                Text(
-                    text = "Mensajes",
-                    style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.padding(bottom = 16.dp)
-                )
-
-                if (chatThreads.isEmpty()) {
-                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text("💬", fontSize = 48.sp)
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text("No hay conversaciones iniciadas.", color = Color.Gray)
-                            Text("Selecciona un dispositivo en el Escáner para chatear.", fontSize = 12.sp, color = Color.Gray)
-                        }
-                    }
-                } else {
-                    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(chatThreads) { thread ->
-                            Card(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        activeChatPeerDeviceId.value = thread.peerDeviceId
-                                        activeChatPeerName.value = thread.peerName
-                                        loadChatMessagesForPeer(thread.peerDeviceId)
-                                    },
-                                shape = RoundedCornerShape(16.dp),
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(12.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    AvatarBubble(avatarIndex = thread.avatarIndex, size = 48.dp)
-                                    Spacer(modifier = Modifier.width(12.dp))
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(thread.peerName, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                                        Text(thread.lastMessage, maxLines = 1, fontSize = 13.sp, color = Color.Gray)
-                                    }
-                                    Text(
-                                        text = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(thread.timestamp)),
-                                        fontSize = 11.sp,
-                                        color = Color.Gray
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        } else {
-            // Individual Messenger Chat Conversation View
-            Column(modifier = Modifier.fillMaxSize()) {
-                // Header Bar
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(MaterialTheme.colorScheme.surface)
-                        .padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton(onClick = { activeChatPeerDeviceId.value = "" }) {
-                        Text("◀", fontSize = 18.sp, color = MaterialTheme.colorScheme.primary)
-                    }
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(activeChatPeerName.value, fontWeight = FontWeight.Bold, fontSize = 18.sp, modifier = Modifier.weight(1f))
-
-                    // Quick Clipboard Share Button
-                    IconButton(onClick = {
-                        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                        val clipData = clipboard.primaryClip
-                        if (clipData != null && clipData.itemCount > 0) {
-                            val text = clipData.getItemAt(0).text?.toString() ?: ""
-                            if (text.isNotEmpty()) {
-                                sessionManager.sendClipboardData(text)
-                                HapticManager.performLightClick(this@MainActivity)
-                                Toast.makeText(this@MainActivity, "📋 Portapapeles enviado: $text", Toast.LENGTH_SHORT).show()
-                            } else {
-                                Toast.makeText(this@MainActivity, "Portapapeles vacío", Toast.LENGTH_SHORT).show()
-                            }
-                        } else {
-                            Toast.makeText(this@MainActivity, "Portapapeles vacío", Toast.LENGTH_SHORT).show()
-                        }
-                    }) {
-                        Text("📋", fontSize = 18.sp)
-                    }
-
-                    IconButton(onClick = {
-                        activeChatPeerDeviceId.value = ""
-                    }) {
-                        Text("❌", fontSize = 16.sp)
-                    }
-                }
-
-                HorizontalDivider(color = Color.Gray.copy(alpha = 0.2f))
-
-                // Chat Messages List
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(horizontal = 12.dp)
-                ) {
-                    val scrollState = rememberScrollState()
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .verticalScroll(scrollState),
-                        verticalArrangement = Arrangement.Bottom
-                    ) {
-                        chatMessages.forEach { msg ->
-                            val alignment = if (msg.isMe) Alignment.End else Alignment.Start
-                            val bubbleColor = if (msg.isMe) MaterialTheme.colorScheme.primary else Color(0xFF334155)
-                            val textColor = Color.White
-
-                            Column(
-                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                                horizontalAlignment = alignment
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .clip(
-                                            RoundedCornerShape(
-                                                topStart = 16.dp,
-                                                topEnd = 16.dp,
-                                                bottomStart = if (msg.isMe) 16.dp else 2.dp,
-                                                bottomEnd = if (msg.isMe) 2.dp else 16.dp
-                                            )
-                                        )
-                                        .background(bubbleColor)
-                                        .padding(horizontal = 14.dp, vertical = 10.dp)
-                                ) {
-                                    Text(text = msg.message, color = textColor, fontSize = 15.sp)
-                                }
-                                Text(
-                                    text = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(msg.timestamp)),
-                                    fontSize = 10.sp,
-                                    color = Color.Gray,
-                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-                                )
-                            }
-                        }
-                    }
-                    LaunchedEffect(chatMessages.size) {
-                        scrollState.animateScrollTo(scrollState.maxValue)
-                    }
-                }
-
-                // Walkie-Talkie & Chat Input Bar
-                var isWalkiePressing by remember { mutableStateOf(false) }
-
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(12.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        // Push-To-Talk Walkie Talkie Button
-                        Button(
-                            onClick = {
-                                isWalkiePressing = !isWalkiePressing
-                                HapticManager.performLightClick(context)
-                                val info = currentConnectionInfo.value
-                                val host = if (info?.isGroupOwner == true) {
-                                    fileTransferManager.lastClientIpAddress ?: "192.168.49.2"
-                                } else {
-                                    info?.groupOwnerAddress?.hostAddress ?: "192.168.49.1"
-                                }
-                                if (isWalkiePressing) {
-                                    streamManager.startWalkieTalkieServer()
-                                    Toast.makeText(context, "📻 Intercomunicador Walkie-Talkie Activo", Toast.LENGTH_SHORT).show()
-                                } else {
-                                    Toast.makeText(context, "Walkie-Talkie finalizado", Toast.LENGTH_SHORT).show()
-                                }
-                            },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isWalkiePressing) Color(0xFFFF3B30) else Color(0xFF34C759)
-                            ),
-                            shape = RoundedCornerShape(20.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
-                        ) {
-                            Text(if (isWalkiePressing) "🔴 Soltar Walkie" else "📻 Push-to-Talk", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        }
-
-                        Spacer(modifier = Modifier.width(8.dp))
-
-                        OutlinedTextField(
-                            value = messageInput,
-                            onValueChange = { messageInput = it },
-                            modifier = Modifier.weight(1f),
-                            placeholder = { Text("Escribe un mensaje...") },
-                            shape = RoundedCornerShape(24.dp),
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                            keyboardActions = KeyboardActions(onSend = {
-                                if (messageInput.trim().isNotEmpty()) {
-                                    val msg = sessionManager.sendChatMessage(
-                                        text = messageInput.trim(),
-                                        myName = myNameState.value,
-                                        peerDeviceId = activeChatPeerDeviceId.value
-                                    )
-                                    chatMessages.add(msg)
-                                    messageInput = ""
-                                    HapticManager.performLightClick(context)
-                                }
-                            })
-                        )
-
-                        Spacer(modifier = Modifier.width(8.dp))
-
-                        IconButton(
-                            onClick = {
-                                if (messageInput.trim().isNotEmpty()) {
-                                    val msg = sessionManager.sendChatMessage(
-                                        text = messageInput.trim(),
-                                        myName = myNameState.value,
-                                        peerDeviceId = activeChatPeerDeviceId.value
-                                    )
-                                    chatMessages.add(msg)
-                                    messageInput = ""
-                                    HapticManager.performLightClick(context)
-                                }
-                            },
-                            modifier = Modifier
-                                .size(48.dp)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.primary)
-                        ) {
-                            Text("⬆", fontSize = 20.sp, color = Color.White)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // --- TAB 2: Transferencias Tab ---
-    @Composable
-    fun TransfersTabScreen() {
-        val context = LocalContext.current
-        var history by remember { mutableStateOf(emptyList<DbTransferRecord>()) }
-
-        LaunchedEffect(Unit) {
-            history = dbHelper.getTransferHistory()
-        }
-
-        val filePicker = rememberLauncherForActivityResult(
-            contract = ActivityResultContracts.GetContent()
-        ) { uri: Uri? ->
-            uri?.let { fileUri ->
-                val info = currentConnectionInfo.value
-                if (info != null && info.groupFormed) {
-                    val hostAddress = if (info.isGroupOwner) {
-                        fileTransferManager.lastClientIpAddress ?: "192.168.49.2"
-                    } else {
-                        info.groupOwnerAddress?.hostAddress ?: "192.168.49.1"
-                    }
-                    lifecycleScope.launch {
-                        fileTransferManager.sendFile(hostAddress, fileUri, isAutoPlayAudioEnabled.value)
-                    }
-                } else {
-                    Toast.makeText(context, "Conéctate a un dispositivo primero", Toast.LENGTH_SHORT).show()
-                }
-            }
-        }
-
-        Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-            Text(
-                text = "Transferencia de Archivos",
-                style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(bottom = 12.dp)
-            )
-
-            // Active Transfer Bar with Live Speed & ETA Monitor
-            AnimatedVisibility(visible = isTransferring.value) {
-                Card(
-                    modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text("⚡ ${transferFileName.value}", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                            Text(transferSpeedState.value, fontWeight = FontWeight.Bold, color = Color(0xFF30D158), fontSize = 14.sp)
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        LinearProgressIndicator(
-                            progress = transferProgress.value,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("${(transferProgress.value * 100).toInt()}%", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                            Text(transferEtaState.value, fontSize = 12.sp, color = Color.Gray)
-                        }
-                    }
-                }
-            }
-
-            Button(
-                onClick = { filePicker.launch("*/*") },
-                modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)
-            ) {
-                Text("📁 Seleccionar y Enviar Archivo")
-            }
-
-            Text("Historial de Transferencias", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(bottom = 8.dp))
-
-            if (history.isEmpty()) {
-                Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    Text("No hay historial de transferencias.", color = Color.Gray)
-                }
-            } else {
-                LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(history) { item ->
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-                        ) {
-                            Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Text(if (item.isIncoming) "⬇" else "⬆", fontSize = 20.sp, color = if (item.isIncoming) Color(0xFF10B981) else Color(0xFF3B82F6))
-                                Spacer(modifier = Modifier.width(12.dp))
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(item.fileName, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 1)
-                                    val sizeMb = String.format("%.2f MB", item.fileSize.toDouble() / (1024 * 1024))
-                                    Text("$sizeMb • ${item.status}", fontSize = 11.sp, color = Color.Gray)
-                                }
-                                Text(
-                                    text = SimpleDateFormat("dd/MM HH:mm", Locale.getDefault()).format(Date(item.timestamp)),
-                                    fontSize = 10.sp,
-                                    color = Color.Gray
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // --- TAB 3: Transmisión Media Screen ---
-    @Composable
-    fun TransmissionTabScreen() {
-        val context = LocalContext.current
-
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(16.dp)
-                .verticalScroll(rememberScrollState()),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text(
-                text = "Transmisión en Tiempo Real",
-                style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(bottom = 12.dp)
-            )
-
-            // Screen Sharing Control Card
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text("Compartir Pantalla Remota", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                            Text("Transmite tu pantalla en vivo a otro dispositivo.", fontSize = 12.sp, color = Color.Gray)
-                        }
-                        Switch(
-                            checked = isScreenShareEnabled.value,
-                            onCheckedChange = { isScreenShareEnabled.value = it }
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Button(
-                            onClick = {
-                                sessionManager.sendStreamRequest("AUDIO", myNameState.value)
-                                Toast.makeText(context, "Solicitando transmisión de audio...", Toast.LENGTH_SHORT).show()
-                            },
-                            modifier = Modifier.weight(1f),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981))
-                        ) {
-                            Text("🎙️ Audio Vivo", fontSize = 12.sp)
-                        }
-                        Button(
-                            onClick = {
-                                sessionManager.sendStreamRequest("SCREEN", myNameState.value)
-                                Toast.makeText(context, "Solicitando transmisión de pantalla...", Toast.LENGTH_SHORT).show()
-                            },
-                            modifier = Modifier.weight(1f),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFA855F7))
-                        ) {
-                            Text("📺 Pantalla Viva", fontSize = 12.sp)
-                        }
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // Universal Browser Vault QR Code Card (Feature 1)
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text("🌐 Web Vault (AirShare sin App)", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                    Text("Escanea este QR desde cualquier iPhone/PC para transferir archivos directamente.", fontSize = 12.sp, color = Color.Gray, textAlign = TextAlign.Center)
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    val localIp = getLocalIpAddress(context)
-                    val url = "http://$localIp:8989"
-
-                    val qrBitmap = remember(url) { generateQrCodeBitmap(url) }
-                    qrBitmap?.let {
-                        Image(
-                            bitmap = it.asImageBitmap(),
-                            contentDescription = "QR Vault",
-                            modifier = Modifier.size(160.dp).clip(RoundedCornerShape(8.dp))
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(url, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, fontSize = 14.sp)
-
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Button(onClick = { toggleAirShareServer() }) {
-                        Text(if (isAirShareServerActive.value) "Detener Servidor Web" else "Iniciar Servidor Web")
-                    }
-                }
-            }
-        }
-    }
-
-    // --- TAB 4: Ajustes & Perfil ---
-    @Composable
-    fun SettingsTabScreen() {
-        val context = LocalContext.current
-        var nameInput by remember { mutableStateOf(myNameState.value) }
-        var phoneInput by remember { mutableStateOf(myPhoneState.value) }
-
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(16.dp)
-                .verticalScroll(rememberScrollState())
-        ) {
-            Text(
-                text = "Ajustes y Perfil",
-                style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(bottom = 12.dp)
-            )
-
-            // Identity Profile Card
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Tu Identidad Persistente", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                    Text("ID Unico: ${myDeviceIdState.value}", fontSize = 11.sp, color = Color.Gray)
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    OutlinedTextField(
-                        value = nameInput,
-                        onValueChange = {
-                            nameInput = it
-                            myNameState.value = it
-                            dbHelper.saveProfile(it, myPhoneState.value, myAvatarState.value, myDeviceIdState.value)
-                        },
-                        label = { Text("Nombre para mostrar") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    OutlinedTextField(
-                        value = phoneInput,
-                        onValueChange = {
-                            phoneInput = it
-                            myPhoneState.value = it
-                            dbHelper.saveProfile(myNameState.value, it, myAvatarState.value, myDeviceIdState.value)
-                        },
-                        label = { Text("Teléfono") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Text("Avatar:", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        AVATAR_DESIGNS.forEachIndexed { idx, design ->
-                            val isSelected = myAvatarState.value == idx
-                            Box(
-                                modifier = Modifier
-                                    .size(36.dp)
-                                    .clip(CircleShape)
-                                    .background(Brush.linearGradient(design.bgGradients))
-                                    .border(if (isSelected) 3.dp else 0.dp, MaterialTheme.colorScheme.primary, CircleShape)
-                                    .clickable {
-                                        myAvatarState.value = idx
-                                        dbHelper.saveProfile(myNameState.value, myPhoneState.value, idx, myDeviceIdState.value)
-                                    },
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(design.emoji, fontSize = 18.sp)
-                            }
-                        }
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // Dynamic Theme Customizer Card (Feature 2)
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Personalización de Tema iOS", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        THEME_PRESETS.forEachIndexed { idx, theme ->
-                            Button(
-                                onClick = {
-                                    currentThemeIndex.value = idx
-                                    HapticManager.performLightClick(context)
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = theme.primary),
-                                modifier = Modifier.weight(1f).padding(horizontal = 2.dp)
-                            ) {
-                                Text(theme.name.take(4), fontSize = 10.sp, color = Color.White)
-                            }
-                        }
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // Background Discovery Toggle
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-            ) {
-                Row(
-                    modifier = Modifier.padding(16.dp).fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Búsqueda BLE en Segundo Plano", fontWeight = FontWeight.Bold)
-                        Text("Permite detectar dispositivos con pantalla apagada.", fontSize = 11.sp, color = Color.Gray)
-                    }
-                    Switch(
-                        checked = isBgDiscoveryEnabled.value,
-                        onCheckedChange = { isEnabled ->
-                            isBgDiscoveryEnabled.value = isEnabled
-                            getSharedPreferences("conexion_prefs", Context.MODE_PRIVATE).edit().putBoolean("bg_discovery_enabled", isEnabled).apply()
-                            if (isEnabled) startBgDiscoveryService() else stopBgDiscoveryService()
-                        }
-                    )
-                }
-            }
-        }
-    }
 }

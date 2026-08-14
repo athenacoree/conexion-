@@ -150,17 +150,12 @@ fun AirDropBottomSheet(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(72.dp)
-                                .clip(CircleShape)
-                                .background(Color.White.copy(alpha = 0.1f))
-                                .border(2.dp, Color(0xFF007AFF), CircleShape),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            val design = MainActivity.AVATAR_DESIGNS.getOrElse(myAvatarIndex) { MainActivity.AVATAR_DESIGNS[0] }
-                            Text(design.emoji, fontSize = 36.sp)
-                        }
+                        AvatarBubble(
+                            avatarIndex = myAvatarIndex,
+                            size = 66.dp,
+                            showGlowRing = true,
+                            isFloating = true
+                        )
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
                             text = myName,
@@ -231,62 +226,48 @@ fun AirDropBottomSheet(
                         contentPadding = PaddingValues(horizontal = 4.dp)
                     ) {
                         items(combinedList) { item ->
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                modifier = Modifier
-                                    .width(76.dp)
-                                    .clickable {
-                                        when (item) {
-                                            is AirDropItem.Wifi -> onPeerSelected(item.peer)
-                                            is AirDropItem.Ble -> onBlePeerSelected(item.ble)
-                                        }
+                            WiggleBox(
+                                onClick = {
+                                    when (item) {
+                                        is AirDropItem.Wifi -> onPeerSelected(item.peer)
+                                        is AirDropItem.Ble -> onBlePeerSelected(item.ble)
                                     }
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(60.dp)
-                                        .clip(CircleShape)
-                                        .background(
-                                            Brush.linearGradient(
-                                                colors = listOf(
-                                                    Color(0xFF007AFF).copy(alpha = 0.3f),
-                                                    Color(0xFF5856D6).copy(alpha = 0.3f)
-                                                )
-                                            )
-                                        )
-                                        .border(
-                                            width = 2.dp,
-                                            color = if (item is AirDropItem.Wifi) Color(0xFF34C759) else Color(0xFF007AFF),
-                                            shape = CircleShape
-                                        ),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    val design = MainActivity.AVATAR_DESIGNS.getOrElse(item.avatarIndex) { MainActivity.AVATAR_DESIGNS[0] }
-                                    Text(design.emoji, fontSize = 28.sp)
                                 }
-                                Spacer(modifier = Modifier.height(6.dp))
-                                Text(
-                                    text = item.userName,
-                                    color = Color.White,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    textAlign = TextAlign.Center,
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                                Box(
-                                    modifier = Modifier
-                                        .background(Color.White.copy(alpha = 0.12f), RoundedCornerShape(10.dp))
-                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier.width(76.dp)
                                 ) {
-                                    Text(
-                                        text = item.formattedDistance,
-                                        color = Color(0xFF30D158),
-                                        fontSize = 9.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        textAlign = TextAlign.Center
+                                    AvatarBubble(
+                                        avatarIndex = item.avatarIndex,
+                                        size = 54.dp,
+                                        showGlowRing = true,
+                                        isFloating = true
                                     )
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(
+                                        text = item.userName,
+                                        color = Color.White,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        textAlign = TextAlign.Center,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .background(Color.White.copy(alpha = 0.12f), RoundedCornerShape(10.dp))
+                                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                                    ) {
+                                        Text(
+                                            text = item.formattedDistance,
+                                            color = Color(0xFF30D158),
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            textAlign = TextAlign.Center
+                                        )
+                                    }
                                 }
                             }
                         }
