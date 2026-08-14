@@ -115,6 +115,7 @@ class ShareActivity : ComponentActivity() {
 
         fileTransferManager = FileTransferManager(
             context = this,
+            dbHelper = dbHelper,
             onIncomingFileRequest = { _, _, _, _ -> },
             onError = { errorMsg ->
                 runOnUiThread {
