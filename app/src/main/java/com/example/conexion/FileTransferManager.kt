@@ -154,6 +154,22 @@ class FileTransferManager(
             onProgress(fileName, fileSize, fileSize, true)
 
             val savedUri = lastReceivedFileUri
+            if (fileName.endsWith(".pmtiles", ignoreCase = true) && savedUri != null) {
+                try {
+                    val mapsDir = File(context.filesDir, "maps")
+                    if (!mapsDir.exists()) mapsDir.mkdirs()
+                    val targetFile = File(mapsDir, fileName)
+                    context.contentResolver.openInputStream(savedUri)?.use { input ->
+                        FileOutputStream(targetFile).use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+                    Log.d(tag, "Automatically imported received map file to: ${targetFile.absolutePath}")
+                } catch (e: Exception) {
+                    Log.e(tag, "Failed to import received map file", e)
+                }
+            }
+
             if (shouldPlayRemotely && savedUri != null) {
                 withContext(Dispatchers.Main) {
                     Log.d(tag, "Triggering automatic remote audio play callback for: $fileName, URI: $savedUri")

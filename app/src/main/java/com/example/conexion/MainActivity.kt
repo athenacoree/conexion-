@@ -77,6 +77,15 @@ class MainActivity : ComponentActivity() {
     private lateinit var dbHelper: DatabaseHelper
     private lateinit var streamManager: StreamManager
 
+    private lateinit var mapManager: MapManager
+    private lateinit var pmTilesTileServer: PmTilesTileServer
+
+    private var selectedMunicipality = mutableStateOf<MunicipalityItem?>(null)
+    private var gpsDetectedMunicipality = mutableStateOf<MunicipalityItem?>(null)
+    private var isMapDownloading = mutableStateOf(false)
+    private var downloadMapProgress = mutableStateOf(0f)
+    private var currentMapFile = mutableStateOf<File?>(null)
+
     // Live Streaming State
     private var liveScreenFrameBitmap = mutableStateOf<Bitmap?>(null)
     private var isReceivingScreenStream = mutableStateOf(false)
@@ -509,6 +518,41 @@ class MainActivity : ComponentActivity() {
 
         audioBeaconEmitter = AudioBeaconEmitter()
 
+        mapManager = MapManager(this)
+        pmTilesTileServer = PmTilesTileServer(8090)
+        pmTilesTileServer.start()
+
+        val defaultMuni = mapManager.municipalities.firstOrNull { it.province == "Havana" } ?: mapManager.municipalities.firstOrNull()
+        selectedMunicipality.value = defaultMuni
+        if (defaultMuni != null && mapManager.isMapDownloaded(defaultMuni)) {
+            val f = mapManager.getLocalMapFile(defaultMuni)
+            currentMapFile.value = f
+            pmTilesTileServer.setMapFile(f)
+        }
+
+        try {
+            val locationManager = getSystemService(Context.LOCATION_SERVICE) as android.location.LocationManager
+            val lastLoc = if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+                locationManager.getLastKnownLocation(android.location.LocationManager.GPS_PROVIDER)
+                    ?: locationManager.getLastKnownLocation(android.location.LocationManager.NETWORK_PROVIDER)
+            } else null
+
+            lastLoc?.let { loc ->
+                val detected = mapManager.findMunicipalityForLocation(loc.latitude, loc.longitude)
+                if (detected != null) {
+                    gpsDetectedMunicipality.value = detected
+                    selectedMunicipality.value = detected
+                    if (mapManager.isMapDownloaded(detected)) {
+                        val f = mapManager.getLocalMapFile(detected)
+                        currentMapFile.value = f
+                        pmTilesTileServer.setMapFile(f)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(tag, "GPS detection error", e)
+        }
+
         toggleWifi(true)
 
         val bgFilter = IntentFilter().apply {
@@ -609,6 +653,7 @@ class MainActivity : ComponentActivity() {
         fileTransferManager.stopServer()
         airShareServer?.stop()
         remoteAudioPlayer.stop()
+        pmTilesTileServer.stop()
 
         if (currentConnectionInfo.value == null) {
             toggleWifi(false)
@@ -966,6 +1011,58 @@ class MainActivity : ComponentActivity() {
                         connectedDeviceName = "",
                         connectedDeviceAddress = currentConnectionInfo.value?.groupOwnerAddress?.hostAddress ?: "",
                         isSearching = false,
+                        mapManager = mapManager,
+                        selectedMunicipality = selectedMunicipality.value,
+                        isMapDownloading = isMapDownloading.value,
+                        downloadProgress = downloadMapProgress.value,
+                        currentMapFile = currentMapFile.value,
+                        gpsDetectedMunicipality = gpsDetectedMunicipality.value,
+                        onSelectMunicipality = { item ->
+                            selectedMunicipality.value = item
+                            if (mapManager.isMapDownloaded(item)) {
+                                val f = mapManager.getLocalMapFile(item)
+                                currentMapFile.value = f
+                                pmTilesTileServer.setMapFile(f)
+                            } else {
+                                currentMapFile.value = null
+                            }
+                        },
+                        onDownloadMap = { item ->
+                            isMapDownloading.value = true
+                            downloadMapProgress.value = 0f
+                            lifecycleScope.launch {
+                                mapManager.downloadMap(
+                                    item = item,
+                                    onProgress = { p -> downloadMapProgress.value = p },
+                                    onSuccess = { f ->
+                                        isMapDownloading.value = false
+                                        currentMapFile.value = f
+                                        pmTilesTileServer.setMapFile(f)
+                                        Toast.makeText(this@MainActivity, "Mapa de ${item.municipality} descargado con éxito", Toast.LENGTH_SHORT).show()
+                                    },
+                                    onError = { err ->
+                                        isMapDownloading.value = false
+                                        Toast.makeText(this@MainActivity, err, Toast.LENGTH_LONG).show()
+                                    }
+                                )
+                            }
+                        },
+                        onShareMapP2P = { mapF ->
+                            val info = currentConnectionInfo.value
+                            if (info != null && info.groupFormed) {
+                                val hostAddress = if (info.isGroupOwner) {
+                                    fileTransferManager.lastClientIpAddress ?: "192.168.49.2"
+                                } else {
+                                    info.groupOwnerAddress?.hostAddress ?: "192.168.49.1"
+                                }
+                                lifecycleScope.launch {
+                                    Toast.makeText(this@MainActivity, "Enviando mapa .pmtiles vía P2P...", Toast.LENGTH_SHORT).show()
+                                    fileTransferManager.sendFile(hostAddress, Uri.fromFile(mapF))
+                                }
+                            } else {
+                                Toast.makeText(this@MainActivity, "Conecta primero un dispositivo P2P para enviar el mapa", Toast.LENGTH_LONG).show()
+                            }
+                        },
                         onStartDiscovery = {
                             wifiP2pHelper.startAdvertising(myNameState.value, myDeviceIdState.value)
                             wifiP2pHelper.startDiscovery()

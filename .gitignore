@@ -20,3 +20,10 @@ local.properties
 # OS files
 .DS_Store
 Thumbs.db
+
+# Map generation files & artifacts
+/mapas/
+/mapas_test/
+*.pmtiles
+pmtiles
+temp_*.geojson
