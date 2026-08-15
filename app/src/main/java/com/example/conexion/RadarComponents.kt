@@ -205,89 +205,139 @@ fun OfflineMapView(
         }
     }
 
-    if (mapFile != null && mapFile.exists() && styleJson.isNotEmpty()) {
-        androidx.compose.ui.viewinterop.AndroidView(
-            modifier = modifier
-                .fillMaxWidth()
-                .height(280.dp)
-                .clip(RoundedCornerShape(24.dp)),
-            factory = { ctx ->
-                com.mapbox.mapboxsdk.Mapbox.getInstance(ctx)
-                com.mapbox.mapboxsdk.maps.MapView(ctx).apply {
-                    onCreate(null)
-                    getMapAsync { maplibreMap ->
-                        maplibreMap.setStyle(
-                            com.mapbox.mapboxsdk.maps.Style.Builder().fromJson(styleJson)
-                        ) {
-                            userLocation?.let { (uLat, uLon) ->
-                                maplibreMap.cameraPosition = com.mapbox.mapboxsdk.camera.CameraPosition.Builder()
-                                    .target(com.mapbox.mapboxsdk.geometry.LatLng(uLat, uLon))
-                                    .zoom(14.0)
-                                    .tilt(50.0)
-                                    .build()
-                            } ?: run {
-                                maplibreMap.cameraPosition = com.mapbox.mapboxsdk.camera.CameraPosition.Builder()
-                                    .tilt(50.0)
-                                    .build()
-                            }
+    var tappedMarkerState by remember { mutableStateOf<PeerMapMarker?>(selectedMarker) }
 
-                            maplibreMap.uiSettings.apply {
-                                isRotateGesturesEnabled = true
-                                isTiltGesturesEnabled = true
-                                isZoomGesturesEnabled = true
-                                isScrollGesturesEnabled = true
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .then(if (isFullScreen) Modifier.fillMaxSize() else Modifier.height(280.dp))
+            .clip(if (isFullScreen) RoundedCornerShape(0.dp) else RoundedCornerShape(24.dp))
+    ) {
+        if (mapFile != null && mapFile.exists() && styleJson.isNotEmpty()) {
+            androidx.compose.ui.viewinterop.AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = { ctx ->
+                    com.mapbox.mapboxsdk.Mapbox.getInstance(ctx)
+                    com.mapbox.mapboxsdk.maps.MapView(ctx).apply {
+                        onCreate(null)
+                        getMapAsync { maplibreMap ->
+                            maplibreMap.setStyle(
+                                com.mapbox.mapboxsdk.maps.Style.Builder().fromJson(styleJson)
+                            ) {
+                                userLocation?.let { (uLat, uLon) ->
+                                    maplibreMap.cameraPosition = com.mapbox.mapboxsdk.camera.CameraPosition.Builder()
+                                        .target(com.mapbox.mapboxsdk.geometry.LatLng(uLat, uLon))
+                                        .zoom(14.0)
+                                        .tilt(50.0)
+                                        .build()
+                                } ?: run {
+                                    maplibreMap.cameraPosition = com.mapbox.mapboxsdk.camera.CameraPosition.Builder()
+                                        .tilt(50.0)
+                                        .build()
+                                }
+
+                                maplibreMap.uiSettings.apply {
+                                    isRotateGesturesEnabled = true
+                                    isTiltGesturesEnabled = true
+                                    isZoomGesturesEnabled = true
+                                    isScrollGesturesEnabled = true
+                                }
+
+                                maplibreMap.setOnMarkerClickListener { marker ->
+                                    val matched = peerMarkers.find { it.name in (marker.title ?: "") }
+                                    tappedMarkerState = matched
+                                    onMarkerClick(matched)
+                                    false
+                                }
                             }
                         }
                     }
+                },
+                update = { mapView ->
+                    mapView.onResume()
+                    mapView.getMapAsync { maplibreMap ->
+                        maplibreMap.clear()
+
+                        userLocation?.let { (uLat, uLon) ->
+                            maplibreMap.addMarker(
+                                com.mapbox.mapboxsdk.annotations.MarkerOptions()
+                                    .position(com.mapbox.mapboxsdk.geometry.LatLng(uLat, uLon))
+                                    .title("📍 Tú")
+                            )
+                        }
+
+                        peerMarkers.forEach { marker ->
+                            val markerTitle = if (marker.isExactGps) "👤 ${marker.name} (GPS)" else "📡 ${marker.name} (RSSI aprox)"
+                            maplibreMap.addMarker(
+                                com.mapbox.mapboxsdk.annotations.MarkerOptions()
+                                    .position(com.mapbox.mapboxsdk.geometry.LatLng(marker.latitude, marker.longitude))
+                                    .title(markerTitle)
+                            )
+                        }
+                    }
                 }
-            },
-            update = { mapView ->
-                mapView.onResume()
-                mapView.getMapAsync { maplibreMap ->
-                    maplibreMap.clear()
-
-                    userLocation?.let { (uLat, uLon) ->
-                        maplibreMap.addMarker(
-                            com.mapbox.mapboxsdk.annotations.MarkerOptions()
-                                .position(com.mapbox.mapboxsdk.geometry.LatLng(uLat, uLon))
-                                .title("📍 Tú")
-                        )
-                    }
-
-                    peerMarkers.forEach { marker ->
-                        val markerTitle = if (marker.isExactGps) "👤 ${marker.name} (GPS)" else "📡 ${marker.name} (RSSI aprox)"
-                        maplibreMap.addMarker(
-                            com.mapbox.mapboxsdk.annotations.MarkerOptions()
-                                .position(com.mapbox.mapboxsdk.geometry.LatLng(marker.latitude, marker.longitude))
-                                .title(markerTitle)
-                        )
-                    }
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(if (isDark) Color(0xFF1E293B) else Color(0xFFF1F5F9))
+                    .border(
+                        1.dp,
+                        if (isDark) Color.White.copy(alpha = 0.1f) else Color(0xFFCBD5E1),
+                        if (isFullScreen) RoundedCornerShape(0.dp) else RoundedCornerShape(24.dp)
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("🗺️", fontSize = 36.sp)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        "Selecciona y descarga el mapa de tu municipio",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
-        )
-    } else {
-        Box(
-            modifier = modifier
-                .fillMaxWidth()
-                .height(180.dp)
-                .clip(RoundedCornerShape(24.dp))
-                .background(if (isDark) Color(0xFF1E293B) else Color(0xFFF1F5F9))
-                .border(
-                    1.dp,
-                    if (isDark) Color.White.copy(alpha = 0.1f) else Color(0xFFCBD5E1),
-                    RoundedCornerShape(24.dp)
-                ),
-            contentAlignment = Alignment.Center
-        ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("🗺️", fontSize = 36.sp)
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    "Selecciona y descarga el mapa de tu municipio",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+        }
+
+        // Tapped Marker Signal Info Card (RSSI overlay appears only when tapped)
+        tappedMarkerState?.let { marker ->
+            Box(
+                modifier = Modifier
+                    .padding(16.dp)
+                    .align(Alignment.BottomCenter)
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(
+                        if (isDark) Color(0xFF0F172A).copy(alpha = 0.92f)
+                        else Color.White.copy(alpha = 0.95f)
+                    )
+                    .border(
+                        1.dp,
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.4f),
+                        RoundedCornerShape(18.dp)
+                    )
+                    .padding(horizontal = 16.dp, vertical = 10.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth(0.9f)
+                ) {
+                    Column {
+                        Text(marker.name, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        Text(
+                            text = if (marker.isExactGps) "📍 Ubicación GPS Exacta" else "📡 Ubicación RSSI Estimada",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text("Coordenadas: ${String.format("%.4f, %.4f", marker.latitude, marker.longitude)}", fontSize = 10.sp, color = Color.Gray)
+                    }
+                    IconButton(onClick = { tappedMarkerState = null }) {
+                        Text("✕", fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
             }
         }
     }

@@ -55,6 +55,17 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         private const val COL_XFER_IS_INCOMING = "is_incoming"
         private const val COL_XFER_TIMESTAMP = "timestamp"
         private const val COL_XFER_STATUS = "status"
+
+        // P2P Stories Table
+        private const val TABLE_STORIES = "p2p_stories"
+        private const val COL_STORY_ID = "id"
+        private const val COL_STORY_PUB_ID = "publisher_device_id"
+        private const val COL_STORY_PUB_NAME = "publisher_name"
+        private const val COL_STORY_TEXT = "content_text"
+        private const val COL_STORY_MEDIA = "media_path"
+        private const val COL_STORY_TYPE = "type"
+        private const val COL_STORY_REACTIONS = "reactions"
+        private const val COL_STORY_TIMESTAMP = "timestamp"
     }
 
     override fun onCreate(db: SQLiteDatabase) {
@@ -110,11 +121,25 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             )
         """.trimIndent()
 
+        val createStoriesTable = """
+            CREATE TABLE $TABLE_STORIES (
+                $COL_STORY_ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                $COL_STORY_PUB_ID TEXT,
+                $COL_STORY_PUB_NAME TEXT,
+                $COL_STORY_TEXT TEXT,
+                $COL_STORY_MEDIA TEXT,
+                $COL_STORY_TYPE TEXT,
+                $COL_STORY_REACTIONS TEXT,
+                $COL_STORY_TIMESTAMP INTEGER
+            )
+        """.trimIndent()
+
         db.execSQL(createProfileTable)
         db.execSQL(createPeersTable)
         db.execSQL(createChatsTable)
         db.execSQL(createTransfersTable)
         db.execSQL(createStarredTable)
+        db.execSQL(createStoriesTable)
         Log.d(TAG, "Database tables created.")
     }
 
@@ -124,6 +149,20 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                 CREATE TABLE IF NOT EXISTS $TABLE_STARRED (
                     $COL_STAR_DEVICE_ID TEXT PRIMARY KEY,
                     $COL_STAR_TIMESTAMP INTEGER
+                )
+            """.trimIndent())
+        }
+        if (oldVersion < 4) {
+            db.execSQL("""
+                CREATE TABLE IF NOT EXISTS $TABLE_STORIES (
+                    $COL_STORY_ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                    $COL_STORY_PUB_ID TEXT,
+                    $COL_STORY_PUB_NAME TEXT,
+                    $COL_STORY_TEXT TEXT,
+                    $COL_STORY_MEDIA TEXT,
+                    $COL_STORY_TYPE TEXT,
+                    $COL_STORY_REACTIONS TEXT,
+                    $COL_STORY_TIMESTAMP INTEGER
                 )
             """.trimIndent())
         }
@@ -364,6 +403,73 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         return db.insert(TABLE_TRANSFERS, null, values)
     }
 
+    // --- P2P Stories Operations (24h Expiration + Reaction Tracking) ---
+    fun saveStory(publisherId: String, publisherName: String, text: String, mediaPath: String, type: String): DbStory {
+        val db = writableDatabase
+        val now = System.currentTimeMillis()
+        val values = ContentValues().apply {
+            put(COL_STORY_PUB_ID, publisherId)
+            put(COL_STORY_PUB_NAME, publisherName)
+            put(COL_STORY_TEXT, text)
+            put(COL_STORY_MEDIA, mediaPath)
+            put(COL_STORY_TYPE, type)
+            put(COL_STORY_REACTIONS, "")
+            put(COL_STORY_TIMESTAMP, now)
+        }
+        val id = db.insert(TABLE_STORIES, null, values)
+        return DbStory(id, publisherId, publisherName, text, mediaPath, type, "", now)
+    }
+
+    fun getActiveStories(): List<DbStory> {
+        val list = mutableListOf<DbStory>()
+        val cutoff = System.currentTimeMillis() - (24 * 60 * 60 * 1000L) // 24 Hours Auto Expiration
+        val db = readableDatabase
+        val cursor = db.query(
+            TABLE_STORIES,
+            null,
+            "$COL_STORY_TIMESTAMP > ?",
+            arrayOf(cutoff.toString()),
+            null, null,
+            "$COL_STORY_TIMESTAMP DESC"
+        )
+        cursor.use {
+            while (it.moveToNext()) {
+                val id = it.getLong(it.getColumnIndexOrThrow(COL_STORY_ID))
+                val pubId = it.getString(it.getColumnIndexOrThrow(COL_STORY_PUB_ID)) ?: ""
+                val pubName = it.getString(it.getColumnIndexOrThrow(COL_STORY_PUB_NAME)) ?: ""
+                val text = it.getString(it.getColumnIndexOrThrow(COL_STORY_TEXT)) ?: ""
+                val media = it.getString(it.getColumnIndexOrThrow(COL_STORY_MEDIA)) ?: ""
+                val type = it.getString(it.getColumnIndexOrThrow(COL_STORY_TYPE)) ?: "text"
+                val reactions = it.getString(it.getColumnIndexOrThrow(COL_STORY_REACTIONS)) ?: ""
+                val timestamp = it.getLong(it.getColumnIndexOrThrow(COL_STORY_TIMESTAMP))
+                list.add(DbStory(id, pubId, pubName, text, media, type, reactions, timestamp))
+            }
+        }
+        return list
+    }
+
+    fun addReactionToStory(storyId: Long, emoji: String) {
+        val db = writableDatabase
+        val cursor = db.query(TABLE_STORIES, arrayOf(COL_STORY_REACTIONS), "$COL_STORY_ID = ?", arrayOf(storyId.toString()), null, null, null)
+        var existing = ""
+        cursor.use {
+            if (it.moveToFirst()) {
+                existing = it.getString(0) ?: ""
+            }
+        }
+        val updated = if (existing.isEmpty()) emoji else "$existing,$emoji"
+        val values = ContentValues().apply {
+            put(COL_STORY_REACTIONS, updated)
+        }
+        db.update(TABLE_STORIES, values, "$COL_STORY_ID = ?", arrayOf(storyId.toString()))
+    }
+
+    fun cleanupExpiredStories(): Int {
+        val db = writableDatabase
+        val cutoff = System.currentTimeMillis() - (24 * 60 * 60 * 1000L)
+        return db.delete(TABLE_STORIES, "$COL_STORY_TIMESTAMP <= ?", arrayOf(cutoff.toString()))
+    }
+
     fun getTransferHistory(limit: Int = 30): List<DbTransferRecord> {
         val list = mutableListOf<DbTransferRecord>()
         val db = readableDatabase
@@ -412,6 +518,17 @@ data class DbChatThread(
     val peerName: String,
     val avatarIndex: Int,
     val lastMessage: String,
+    val timestamp: Long
+)
+
+data class DbStory(
+    val id: Long,
+    val publisherId: String,
+    val publisherName: String,
+    val text: String,
+    val mediaPath: String,
+    val type: String, // "text", "photo", "video", "audio"
+    val reactions: String, // comma separated reactions
     val timestamp: Long
 )
 
