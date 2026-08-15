@@ -1350,13 +1350,19 @@ class MainActivity : ComponentActivity() {
         }
 
         selectedPeerForActions?.let { peer ->
+            val isStarred = dbHelper.isDeviceStarred(peer.sessionToken.ifEmpty { peer.device.deviceAddress })
             AlertDialog(
                 onDismissRequest = { selectedPeerForActions = null },
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         AvatarBubble(avatarIndex = peer.avatarIndex, size = 42.dp)
                         Spacer(modifier = Modifier.width(12.dp))
-                        Text(peer.userName)
+                        Column {
+                            Text(peer.userName)
+                            if (isStarred) {
+                                Text("⭐ Usuario Recordado", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                            }
+                        }
                     }
                 },
                 text = { Text("Elige qué acción realizar con este dispositivo:", style = MaterialTheme.typography.bodyMedium) },
@@ -1400,6 +1406,18 @@ class MainActivity : ComponentActivity() {
                             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary)
                         ) {
                             Text("🔗 Conectar y Enviar Archivos")
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                val devId = peer.sessionToken.ifEmpty { peer.device.deviceAddress }
+                                val newStarState = dbHelper.toggleStarDevice(devId)
+                                val msg = if (newStarState) "⭐ Usuario ${peer.userName} recordado para conexión automática" else "Usuario ${peer.userName} olvidado"
+                                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                selectedPeerForActions = null
+                            },
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                        ) {
+                            Text(if (isStarred) "⭐ Olvidar Usuario" else "⭐ Recordar este Usuario")
                         }
                     }
                 },

@@ -94,6 +94,57 @@ fun RadarTabScreen(
     var expandedProv by remember { mutableStateOf(false) }
     var expandedMuni by remember { mutableStateOf(false) }
 
+    val scope = rememberCoroutineScope()
+    var isMapFullScreen by remember { mutableStateOf(false) }
+
+    val importMapLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch(Dispatchers.IO) {
+                try {
+                    val mapsDir = mapManager.getMapsDir()
+                    val destFile = File(mapsDir, "custom_user_map_${System.currentTimeMillis()}.pmtiles")
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        FileOutputStream(destFile).use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(context, "¡Mapa .pmtiles importado con éxito!", Toast.LENGTH_LONG).show()
+                    }
+                } catch (e: Exception) {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(context, "Error importando mapa: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+        }
+    }
+
+    if (isMapFullScreen) {
+        Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+            OfflineMapView(
+                mapFile = currentMapFile,
+                isDark = isDark,
+                userLocation = userLocation,
+                peerMarkers = peerMarkers,
+                isFullScreen = true
+            )
+
+            IconButton(
+                onClick = { isMapFullScreen = false },
+                modifier = Modifier
+                    .padding(16.dp)
+                    .align(Alignment.TopEnd)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.6f))
+            ) {
+                Text("✕", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+    } else {
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -134,6 +185,15 @@ fun RadarTabScreen(
                                 fontSize = 11.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                        }
+                    }
+
+                    Row {
+                        IconButton(onClick = { importMapLauncher.launch("*/*") }) {
+                            Text("📂", fontSize = 18.sp)
+                        }
+                        IconButton(onClick = { isMapFullScreen = true }) {
+                            Text("⤢", fontSize = 18.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -847,6 +907,7 @@ fun RadarTabScreen(
                 }
             }
         }
+    }
     }
 }
 
@@ -1975,8 +2036,7 @@ fun SettingsTabScreen(
                     context.getSharedPreferences("conexion_prefs", Context.MODE_PRIVATE)
                         .edit().putFloat("vibration_range_meters", it).apply()
                 },
-                valueRange = 0.05f..10.0f,
-                steps = 19
+                valueRange = 0.05f..10.0f
             )
 
             Spacer(modifier = Modifier.height(10.dp))

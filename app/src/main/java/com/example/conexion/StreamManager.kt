@@ -224,7 +224,21 @@ class StreamManager(private val context: Context) {
 
         screenRecordScope.launch {
             try {
-                val socket = Socket(remoteHost, port)
+                var socket: Socket? = null
+                var attempts = 0
+                while (isScreenStreaming && socket == null && attempts < 10) {
+                    try {
+                        attempts++
+                        socket = Socket(remoteHost, port)
+                    } catch (e: Exception) {
+                        delay(500)
+                    }
+                }
+                if (socket == null) {
+                    Log.e(tag, "Failed to connect screen sender to $remoteHost:$port after $attempts attempts")
+                    stopScreenStream()
+                    return@launch
+                }
                 screenClientSocket = socket
                 val dos = DataOutputStream(socket.getOutputStream())
 
@@ -242,12 +256,12 @@ class StreamManager(private val context: Context) {
                 imageReader?.setOnImageAvailableListener({ reader ->
                     val now = System.currentTimeMillis()
                     if (now - lastFrameTime < 66) { // ~15 FPS
-                        reader.acquireNextImage()?.close()
+                        reader.acquireLatestImage()?.close()
                         return@setOnImageAvailableListener
                     }
                     lastFrameTime = now
 
-                    val image = reader.acquireNextImage() ?: return@setOnImageAvailableListener
+                    val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
                     try {
                         val planes = image.planes
                         val buffer = planes[0].buffer

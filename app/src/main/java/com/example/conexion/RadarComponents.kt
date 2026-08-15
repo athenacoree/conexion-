@@ -191,6 +191,9 @@ fun OfflineMapView(
     isDark: Boolean,
     userLocation: Pair<Double, Double>? = null,
     peerMarkers: List<PeerMapMarker> = emptyList(),
+    isFullScreen: Boolean = false,
+    selectedMarker: PeerMapMarker? = null,
+    onMarkerClick: (PeerMapMarker?) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -690,7 +693,15 @@ fun ModernSonarRadar(
             list
         }
 
+        var selectedNodeId by remember { mutableStateOf<String?>(null) }
+
         allNodes.forEach { node ->
+            val nodeId = when (node) {
+                is SonarNode.WifiPeer -> node.peer.sessionToken
+                is SonarNode.BlePeer -> node.blePeer.sessionToken
+            }
+            val isSelected = selectedNodeId == nodeId
+
             val angleRad = Math.toRadians(node.angle.toDouble())
             val distancePx = 110 * node.distanceFactor
 
@@ -705,9 +716,13 @@ fun ModernSonarRadar(
                 WiggleBox(
                     onClick = {
                         HapticManager.performLightClick(context)
-                        when (node) {
-                            is SonarNode.WifiPeer -> onPeerClick(node.peer)
-                            is SonarNode.BlePeer -> onBlePeerClick(node.blePeer)
+                        if (selectedNodeId == nodeId) {
+                            when (node) {
+                                is SonarNode.WifiPeer -> onPeerClick(node.peer)
+                                is SonarNode.BlePeer -> onBlePeerClick(node.blePeer)
+                            }
+                        } else {
+                            selectedNodeId = nodeId
                         }
                     }
                 ) {
@@ -744,24 +759,26 @@ fun ModernSonarRadar(
                                     color = MaterialTheme.colorScheme.onSurface,
                                     maxLines = 1
                                 )
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        text = node.formattedDistance,
-                                        fontSize = 9.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = if (node is SonarNode.WifiPeer) Color(0xFF34C759) else MaterialTheme.colorScheme.primary
-                                    )
-                                    Spacer(modifier = Modifier.width(3.dp))
-                                    val rssiVal = when(node) {
-                                        is SonarNode.WifiPeer -> node.peer.rssi
-                                        is SonarNode.BlePeer -> node.blePeer.rssi
+                                if (isSelected) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            text = node.formattedDistance,
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (node is SonarNode.WifiPeer) Color(0xFF34C759) else MaterialTheme.colorScheme.primary
+                                        )
+                                        Spacer(modifier = Modifier.width(3.dp))
+                                        val rssiVal = when(node) {
+                                            is SonarNode.WifiPeer -> node.peer.rssi
+                                            is SonarNode.BlePeer -> node.blePeer.rssi
+                                        }
+                                        Text(
+                                            text = "📶 ${rssiVal}dBm",
+                                            fontSize = 8.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = Color(0xFF30D158)
+                                        )
                                     }
-                                    Text(
-                                        text = "📶 ${rssiVal}dBm",
-                                        fontSize = 8.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = Color(0xFF30D158)
-                                    )
                                 }
                             }
                         }

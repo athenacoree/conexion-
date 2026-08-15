@@ -88,13 +88,11 @@ class BackgroundDiscoveryService : Service() {
 
     // Tracks peers to avoid showing duplicate notifications in a short window
     private val recentlyNotifiedPeers = mutableMapOf<String, Long>()
-    private val lastProximityVibrations = mutableMapOf<String, Long>()
+    private val peersVibratedSet = mutableSetOf<String>()
 
     private fun checkProximityHaptic(sessionToken: String) {
-        val now = System.currentTimeMillis()
-        val last = lastProximityVibrations[sessionToken] ?: 0L
-        if (now - last > 3000) {
-            lastProximityVibrations[sessionToken] = now
+        if (!peersVibratedSet.contains(sessionToken)) {
+            peersVibratedSet.add(sessionToken)
             HapticManager.performProximityHaptic(this)
         }
     }
