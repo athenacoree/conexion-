@@ -447,6 +447,16 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        sessionManager.onRemoteNoteReceived = { senderName, noteText ->
+            HapticManager.performIPhoneHaptic(this)
+            Toast.makeText(this, "📝 Nota de $senderName: $noteText", Toast.LENGTH_LONG).show()
+        }
+
+        sessionManager.onRemoteCameraTriggered = { senderName ->
+            HapticManager.performIPhoneHaptic(this)
+            Toast.makeText(this, "📸 Disparo remoto recibido de $senderName", Toast.LENGTH_LONG).show()
+        }
+
         sessionManager.onScreenShareStarted = { peerName, resolution, fps, quality ->
             activeScreenShareReceiver.value = ScreenShareSession(peerName, resolution, fps, quality)
             Toast.makeText(this, "¡$peerName está compartiendo su pantalla!", Toast.LENGTH_SHORT).show()
@@ -1136,7 +1146,19 @@ class MainActivity : ComponentActivity() {
                             wifiP2pHelper.disconnect()
                         },
                         onPeerSelected = { selectedPeerForActions = it },
-                        onBlePeerSelected = { selectedBlePeerForActions = it }
+                        onBlePeerSelected = { selectedBlePeerForActions = it },
+                        onSendClipboard = { text ->
+                            sessionManager.sendClipboardData(text)
+                        },
+                        onSendRemoteNote = { noteText ->
+                            sessionManager.sendRemoteNote(myNameState.value, noteText)
+                        },
+                        onStartWalkieTalkie = {
+                            sessionManager.sendStreamRequest("AUDIO", myNameState.value)
+                        },
+                        onSendRemoteCameraTrigger = {
+                            sessionManager.sendRemoteCameraTrigger(myNameState.value)
+                        }
                     )
                     1 -> ChatsTabScreen(
                         myAvatarIndex = myAvatarState.value,

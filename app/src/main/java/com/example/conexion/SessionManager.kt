@@ -39,6 +39,10 @@ class SessionManager(
     var onStreamStopped: ((type: String) -> Unit)? = null
     var onClipboardDataReceived: ((text: String) -> Unit)? = null
 
+    // Remote Note & Remote Camera callbacks
+    var onRemoteNoteReceived: ((senderName: String, noteText: String) -> Unit)? = null
+    var onRemoteCameraTriggered: ((senderName: String) -> Unit)? = null
+
     // Screen sharing callbacks
     var onScreenShareStarted: ((peerName: String, resolution: String, fps: Int, quality: String) -> Unit)? = null
     var onScreenShareStopped: (() -> Unit)? = null
@@ -247,6 +251,19 @@ class SessionManager(
                     onContactDataReceived(name, phone)
                 }
             }
+            "REMOTE_NOTE" -> {
+                val senderName = parts.getOrNull(1) ?: "Dispositivo"
+                val noteText = parts.getOrNull(2) ?: ""
+                scope.launch(Dispatchers.Main) {
+                    onRemoteNoteReceived?.invoke(senderName, noteText)
+                }
+            }
+            "REMOTE_CAMERA_TRIGGER" -> {
+                val senderName = parts.getOrNull(1) ?: "Dispositivo"
+                scope.launch(Dispatchers.Main) {
+                    onRemoteCameraTriggered?.invoke(senderName)
+                }
+            }
         }
     }
 
@@ -296,6 +313,14 @@ class SessionManager(
 
     fun sendClipboardData(text: String) {
         sendRaw("CLIPBOARD_DATA|$text")
+    }
+
+    fun sendRemoteNote(myName: String, noteText: String) {
+        sendRaw("REMOTE_NOTE|$myName|$noteText")
+    }
+
+    fun sendRemoteCameraTrigger(myName: String) {
+        sendRaw("REMOTE_CAMERA_TRIGGER|$myName")
     }
 
     private fun sendRaw(payload: String) {
