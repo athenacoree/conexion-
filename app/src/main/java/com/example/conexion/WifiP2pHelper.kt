@@ -71,7 +71,22 @@ class WifiP2pHelper(
 
     fun findPeerByToken(token: String): PeerInfo? {
         if (token.isEmpty() || token == "00:00:00:00:00:00") return null
-        return tokenToPeerMap[token]
+        tokenToPeerMap[token]?.let { return it }
+        return discoveredServicePeers.values.find {
+            it.sessionToken.equals(token, ignoreCase = true) ||
+                    it.device.deviceAddress.equals(token, ignoreCase = true)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    fun connectByAddress(macAddress: String, userName: String = "Dispositivo") {
+        if (manager == null || channel == null || macAddress.isEmpty()) return
+        val dummyDevice = WifiP2pDevice().apply {
+            deviceAddress = macAddress
+            this.deviceName = userName
+        }
+        val peer = PeerInfo(device = dummyDevice, userName = userName, sessionToken = macAddress)
+        connectToPeer(peer)
     }
 
     fun triggerConnectionRequest(peer: PeerInfo) {
@@ -313,7 +328,7 @@ class WifiP2pHelper(
     fun connectToPeer(peer: PeerInfo, force: Boolean = false) {
         if (manager == null || channel == null) return
 
-        Log.d(tag, "Connecting instantly to peer: ${peer.userName} without postponing delay.")
+        Log.d(tag, "Connecting instantly to peer: ${peer.userName} (${peer.device.deviceAddress})")
 
         val config = WifiP2pConfig().apply {
             deviceAddress = peer.device.deviceAddress
@@ -326,10 +341,16 @@ class WifiP2pHelper(
             override fun onFailure(reason: Int) {
                 val errorDesc = when (reason) {
                     WifiP2pManager.P2P_UNSUPPORTED -> "Wi-Fi Direct no es soportado en este dispositivo."
-                    WifiP2pManager.BUSY -> "El sistema de Wi-Fi Direct está ocupado. Intenta de nuevo."
+                    WifiP2pManager.BUSY -> "El sistema de Wi-Fi Direct está ocupado. Reintentando..."
                     else -> "Fallo al iniciar conexión (código $reason)."
                 }
                 Log.e(tag, "Connection initiation failed: $reason")
+                if (reason == WifiP2pManager.BUSY) {
+                    scope.launch {
+                        delay(1000)
+                        manager.connect(channel, config, null)
+                    }
+                }
                 onError(errorDesc)
             }
         })

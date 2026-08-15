@@ -70,14 +70,18 @@ class MapManager(private val context: Context) {
                     }
                 }
 
+                val rawDownloadUrl = props.optString("downloadUrl", "")
+                val assetFilename = props.optString("assetFilename", "")
+                val fixedDownloadUrl = if (rawDownloadUrl.isNotEmpty()) rawDownloadUrl else "https://github.com/carlos-m12/conexion/releases/download/v1.0.0-maps/$assetFilename"
+
                 municipalities.add(
                     MunicipalityItem(
                         id = props.getInt("id"),
                         province = props.getString("province"),
                         municipality = props.getString("municipality"),
-                        relativePath = props.getString("relativePath"),
-                        assetFilename = props.getString("assetFilename"),
-                        downloadUrl = props.getString("downloadUrl"),
+                        relativePath = props.optString("relativePath", ""),
+                        assetFilename = assetFilename,
+                        downloadUrl = fixedDownloadUrl,
                         polygonRings = ringsList
                     )
                 )
