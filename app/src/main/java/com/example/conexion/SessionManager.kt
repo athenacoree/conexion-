@@ -118,12 +118,32 @@ class SessionManager(
         }
     }
 
+    // Set of relayed message signatures to prevent duplicate forwarding cycles in mesh network
+    private val seenMeshMessageIds = mutableSetOf<String>()
+
     private fun parseControlMessage(message: String) {
-        val parts = message.split("|", limit = 4)
+        val parts = message.split("|", limit = 6)
         if (parts.isEmpty()) return
         val cmd = parts[0]
 
         when (cmd) {
+            "MESH_RELAY" -> {
+                val originId = parts.getOrNull(1) ?: ""
+                val targetId = parts.getOrNull(2) ?: ""
+                val hopCount = parts.getOrNull(3)?.toIntOrNull() ?: 0
+                val msgId = parts.getOrNull(4) ?: ""
+                val payload = parts.getOrNull(5) ?: ""
+
+                if (seenMeshMessageIds.contains(msgId) || hopCount > 5) return
+                seenMeshMessageIds.add(msgId)
+
+                if (targetId == myDeviceId || targetId == "BROADCAST") {
+                    parseControlMessage(payload)
+                }
+                if (targetId != myDeviceId && hopCount < 5) {
+                    sendRaw("MESH_RELAY|$originId|$targetId|${hopCount + 1}|$msgId|$payload")
+                }
+            }
             "IDENTIFY" -> {
                 val peerId = parts.getOrNull(1) ?: ""
                 if (peerId.isNotEmpty()) {

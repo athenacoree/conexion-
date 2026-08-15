@@ -448,7 +448,9 @@ fun RadarTabScreen(
                             "7. 📊 Analizador de Señal" to "Grafica RSSI y decibelios en tiempo real",
                             "8. 🎙️ Walkie-Talkie" to "Inicia conversación de voz instantánea por voz",
                             "9. 🔐 Hash Integrity MD5/SHA" to "Verifica la integridad de archivos recibidos",
-                            "10. 📸 Captura Remota" to "Toma fotos remotas sincronizadas vía P2P"
+                            "10. 📸 Captura Remota" to "Toma fotos remotas sincronizadas vía P2P",
+                            "11. 📦 Compartir APKs de Apps" to "Extrae e intercambia paquetes APK de apps instaladas",
+                            "12. 🔒 Bóveda Cifrada P2P" to "Bóveda protegida para archivos confidenciales"
                         )
 
                         tools.forEachIndexed { idx, (tTitle, tDesc) ->

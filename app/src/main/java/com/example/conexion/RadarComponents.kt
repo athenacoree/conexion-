@@ -697,8 +697,8 @@ fun ModernSonarRadar(
 
         allNodes.forEach { node ->
             val nodeId = when (node) {
-                is SonarNode.WifiPeer -> node.peer.sessionToken
-                is SonarNode.BlePeer -> node.blePeer.sessionToken
+                is SonarNode.WifiPeer -> node.peer.sessionToken.ifEmpty { node.peer.device.deviceAddress }
+                is SonarNode.BlePeer -> node.blePeer.sessionToken.ifEmpty { node.blePeer.userName }
             }
             val isSelected = selectedNodeId == nodeId
 

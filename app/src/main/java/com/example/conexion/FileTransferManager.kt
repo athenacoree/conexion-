@@ -79,10 +79,11 @@ class FileTransferManager(
             val inputStream = socket.getInputStream()
             val dataInputStream = DataInputStream(inputStream)
 
-            // Read Metadata: File Name and File Size
+            // Read Metadata: File Name, File Size, and Start Offset (for Resumable Transfers)
             var rawFileName = dataInputStream.readUTF()
             val fileSize = dataInputStream.readLong()
-            Log.d(tag, "Receiving file: $rawFileName, Size: $fileSize bytes")
+            val startOffset = try { dataInputStream.readLong() } catch (e: Exception) { 0L }
+            Log.d(tag, "Receiving file: $rawFileName, Size: $fileSize bytes, StartOffset: $startOffset")
 
             var shouldPlayRemotely = false
             var fileName = rawFileName
@@ -226,6 +227,7 @@ class FileTransferManager(
             Log.d(tag, "Sending metadata: $fileName ($fileSize bytes)")
             dataOutputStream.writeUTF(fileName)
             dataOutputStream.writeLong(fileSize)
+            dataOutputStream.writeLong(0L) // startOffset = 0L for fresh transfer
 
             val inputStream = context.contentResolver.openInputStream(fileUri)
             if (inputStream == null) {

@@ -55,6 +55,16 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         private const val COL_XFER_IS_INCOMING = "is_incoming"
         private const val COL_XFER_TIMESTAMP = "timestamp"
         private const val COL_XFER_STATUS = "status"
+
+        // Statuses / Stories Table
+        private const val TABLE_STATUSES = "p2p_statuses"
+        private const val COL_STATUS_ID = "id"
+        private const val COL_STATUS_PEER_DEVICE_ID = "peer_device_id"
+        private const val COL_STATUS_AUTHOR_NAME = "author_name"
+        private const val COL_STATUS_MEDIA_TYPE = "media_type" // TEXT, PHOTO, VIDEO, AUDIO
+        private const val COL_STATUS_CONTENT = "content"
+        private const val COL_STATUS_CREATED_TIME = "created_timestamp"
+        private const val COL_STATUS_REACTIONS = "reactions_json"
     }
 
     override fun onCreate(db: SQLiteDatabase) {
@@ -110,11 +120,24 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             )
         """.trimIndent()
 
+        val createStatusesTable = """
+            CREATE TABLE $TABLE_STATUSES (
+                $COL_STATUS_ID TEXT PRIMARY KEY,
+                $COL_STATUS_PEER_DEVICE_ID TEXT,
+                $COL_STATUS_AUTHOR_NAME TEXT,
+                $COL_STATUS_MEDIA_TYPE TEXT,
+                $COL_STATUS_CONTENT TEXT,
+                $COL_STATUS_CREATED_TIME INTEGER,
+                $COL_STATUS_REACTIONS TEXT
+            )
+        """.trimIndent()
+
         db.execSQL(createProfileTable)
         db.execSQL(createPeersTable)
         db.execSQL(createChatsTable)
         db.execSQL(createTransfersTable)
         db.execSQL(createStarredTable)
+        db.execSQL(createStatusesTable)
         Log.d(TAG, "Database tables created.")
     }
 
@@ -127,6 +150,96 @@ class DatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                 )
             """.trimIndent())
         }
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS $TABLE_STATUSES (
+                $COL_STATUS_ID TEXT PRIMARY KEY,
+                $COL_STATUS_PEER_DEVICE_ID TEXT,
+                $COL_STATUS_AUTHOR_NAME TEXT,
+                $COL_STATUS_MEDIA_TYPE TEXT,
+                $COL_STATUS_CONTENT TEXT,
+                $COL_STATUS_CREATED_TIME INTEGER,
+                $COL_STATUS_REACTIONS TEXT
+            )
+        """.trimIndent())
+    }
+
+    // --- Statuses / Stories Operations ---
+    fun saveOrUpdateStatus(
+        id: String,
+        peerDeviceId: String,
+        authorName: String,
+        mediaType: String,
+        content: String,
+        createdTimestamp: Long,
+        reactionsJson: String = "{}"
+    ) {
+        val db = writableDatabase
+        val values = ContentValues().apply {
+            put(COL_STATUS_ID, id)
+            put(COL_STATUS_PEER_DEVICE_ID, peerDeviceId)
+            put(COL_STATUS_AUTHOR_NAME, authorName)
+            put(COL_STATUS_MEDIA_TYPE, mediaType)
+            put(COL_STATUS_CONTENT, content)
+            put(COL_STATUS_CREATED_TIME, createdTimestamp)
+            put(COL_STATUS_REACTIONS, reactionsJson)
+        }
+        db.insertWithOnConflict(TABLE_STATUSES, null, values, SQLiteDatabase.CONFLICT_REPLACE)
+        purgeExpiredStatuses()
+    }
+
+    fun purgeExpiredStatuses() {
+        val db = writableDatabase
+        val cutoff = System.currentTimeMillis() - 24 * 60 * 60 * 1000L // 24 hours
+        db.delete(TABLE_STATUSES, "$COL_STATUS_CREATED_TIME < ?", arrayOf(cutoff.toString()))
+    }
+
+    fun getActiveStatuses(): List<DbStatus> {
+        purgeExpiredStatuses()
+        val list = mutableListOf<DbStatus>()
+        val db = readableDatabase
+        val cursor = db.query(
+            TABLE_STATUSES,
+            null,
+            null,
+            null,
+            null, null,
+            "$COL_STATUS_CREATED_TIME DESC"
+        )
+        cursor.use {
+            while (it.moveToNext()) {
+                val id = it.getString(it.getColumnIndexOrThrow(COL_STATUS_ID)) ?: ""
+                val peerDevId = it.getString(it.getColumnIndexOrThrow(COL_STATUS_PEER_DEVICE_ID)) ?: ""
+                val author = it.getString(it.getColumnIndexOrThrow(COL_STATUS_AUTHOR_NAME)) ?: "Usuario"
+                val type = it.getString(it.getColumnIndexOrThrow(COL_STATUS_MEDIA_TYPE)) ?: "TEXT"
+                val content = it.getString(it.getColumnIndexOrThrow(COL_STATUS_CONTENT)) ?: ""
+                val created = it.getLong(it.getColumnIndexOrThrow(COL_STATUS_CREATED_TIME))
+                val rx = it.getString(it.getColumnIndexOrThrow(COL_STATUS_REACTIONS)) ?: "{}"
+                list.add(DbStatus(id, peerDevId, author, type, content, created, rx))
+            }
+        }
+        return list
+    }
+
+    fun addStatusReaction(statusId: String, emoji: String): String {
+        val db = writableDatabase
+        val cursor = db.query(TABLE_STATUSES, arrayOf(COL_STATUS_REACTIONS), "$COL_STATUS_ID = ?", arrayOf(statusId), null, null, null)
+        var rxJson = "{}"
+        cursor.use {
+            if (it.moveToFirst()) {
+                rxJson = it.getString(0) ?: "{}"
+            }
+        }
+        val map = mutableMapOf<String, Int>()
+        try {
+            val json = org.json.JSONObject(rxJson)
+            json.keys().forEach { k -> map[k] = json.getInt(k) }
+        } catch (e: Exception) {}
+        map[emoji] = (map[emoji] ?: 0) + 1
+
+        val newJson = org.json.JSONObject(map as Map<*, *>).toString()
+        val cv = ContentValues().apply { put(COL_STATUS_REACTIONS, newJson) }
+        db.update(TABLE_STATUSES, cv, "$COL_STATUS_ID = ?", arrayOf(statusId))
+        return newJson
     }
 
     // --- Starred Devices Operations ---
@@ -423,4 +536,14 @@ data class DbTransferRecord(
     val isIncoming: Boolean,
     val timestamp: Long,
     val status: String
+)
+
+data class DbStatus(
+    val id: String,
+    val peerDeviceId: String,
+    val authorName: String,
+    val mediaType: String,
+    val content: String,
+    val createdTimestamp: Long,
+    val reactionsJson: String
 )

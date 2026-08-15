@@ -136,6 +136,17 @@ class MapManager(private val context: Context) {
         return dir
     }
 
+    fun cleanUnusedMapCache(maxAgeDays: Long = 30) {
+        val dir = getMapsDir()
+        val cutoff = System.currentTimeMillis() - maxAgeDays * 24 * 60 * 60 * 1000L
+        dir.listFiles()?.forEach { file ->
+            if (file.lastModified() < cutoff) {
+                file.delete()
+                Log.d(tag, "Deleted old cached map file: ${file.name}")
+            }
+        }
+    }
+
     fun getLocalMapFile(item: MunicipalityItem): File {
         return File(getMapsDir(), "${item.province}_${item.municipality}.pmtiles".replace(" ", "_"))
     }
