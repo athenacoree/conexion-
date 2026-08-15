@@ -1196,18 +1196,12 @@ class MainActivity : ComponentActivity() {
                         qrBitmap = if (isAirShareServerActive.value) generateQrCodeBitmap("http://${airShareLocalIp.value}:8989") else null,
                         onToggleScreenShare = { isScreenShareEnabled.value = it },
                         onStartScreenStreaming = {
-                            val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
-                            mediaProjectionLauncher.launch(projectionManager.createScreenCaptureIntent())
+                            sessionManager.sendStreamRequest("SCREEN", myNameState.value)
+                            Toast.makeText(this@MainActivity, "Solicitando inicio de compartir pantalla...", Toast.LENGTH_SHORT).show()
                         },
                         onStartAudioStreaming = {
-                            val info = currentConnectionInfo.value
-                            val hostAddress = if (info?.isGroupOwner == true) {
-                                fileTransferManager.lastClientIpAddress ?: "192.168.49.2"
-                            } else {
-                                info?.groupOwnerAddress?.hostAddress ?: "192.168.49.1"
-                            }
-                            streamManager.startAudioClient(hostAddress)
-                            Toast.makeText(this@MainActivity, "Transmisión de micrófono en vivo iniciada", Toast.LENGTH_SHORT).show()
+                            sessionManager.sendStreamRequest("AUDIO", myNameState.value)
+                            Toast.makeText(this@MainActivity, "Solicitando inicio de transmisión de audio...", Toast.LENGTH_SHORT).show()
                         },
                         onToggleAirShareServer = {
                             toggleAirShareServer()
@@ -1351,7 +1345,12 @@ class MainActivity : ComponentActivity() {
                                 activeChatPeerDeviceId.value = peer.sessionToken
                                 activeChatPeerName.value = peer.userName
                                 loadChatMessagesForPeer(peer.sessionToken)
-                                sessionManager.sendChatRequest(myNameState.value)
+                                if (currentConnectionInfo.value?.groupFormed == true) {
+                                    sessionManager.sendChatRequest(myNameState.value)
+                                } else {
+                                    wifiP2pHelper.connectToPeer(peer)
+                                    Toast.makeText(context, "Conectando P2P para iniciar chat con ${peer.userName}...", Toast.LENGTH_SHORT).show()
+                                }
                                 currentTab = 1
                                 selectedPeerForActions = null
                             },
