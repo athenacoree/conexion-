@@ -15,7 +15,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -25,6 +24,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+
+data class PeerMapMarker(
+    val id: String,
+    val name: String,
+    val latitude: Double,
+    val longitude: Double,
+    val isExactGps: Boolean
+)
 
 @Composable
 fun DynamicIslandBar(
@@ -166,7 +173,7 @@ fun DynamicIslandBar(
                 )
                 .border(
                     1.dp,
-                    if (isDark) Color.White.copy(alpha = 0.1f) else Color(0xFFE2E8F0),
+                    if (isDark) Color.White.copy(alpha = 0.1f) else Color(0xFFCBD5E1),
                     CircleShape
                 )
         ) {
@@ -182,6 +189,8 @@ fun DynamicIslandBar(
 fun OfflineMapView(
     mapFile: java.io.File?,
     isDark: Boolean,
+    userLocation: Pair<Double, Double>? = null,
+    peerMarkers: List<PeerMapMarker> = emptyList(),
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -207,9 +216,17 @@ fun OfflineMapView(
                         maplibreMap.setStyle(
                             com.mapbox.mapboxsdk.maps.Style.Builder().fromJson(styleJson)
                         ) {
-                            maplibreMap.cameraPosition = com.mapbox.mapboxsdk.camera.CameraPosition.Builder()
-                                .tilt(50.0) // 3D Perspective Pitch (between 45° and 60°)
-                                .build()
+                            userLocation?.let { (uLat, uLon) ->
+                                maplibreMap.cameraPosition = com.mapbox.mapboxsdk.camera.CameraPosition.Builder()
+                                    .target(com.mapbox.mapboxsdk.geometry.LatLng(uLat, uLon))
+                                    .zoom(14.0)
+                                    .tilt(50.0)
+                                    .build()
+                            } ?: run {
+                                maplibreMap.cameraPosition = com.mapbox.mapboxsdk.camera.CameraPosition.Builder()
+                                    .tilt(50.0)
+                                    .build()
+                            }
 
                             maplibreMap.uiSettings.apply {
                                 isRotateGesturesEnabled = true
@@ -223,6 +240,26 @@ fun OfflineMapView(
             },
             update = { mapView ->
                 mapView.onResume()
+                mapView.getMapAsync { maplibreMap ->
+                    maplibreMap.clear()
+
+                    userLocation?.let { (uLat, uLon) ->
+                        maplibreMap.addMarker(
+                            com.mapbox.mapboxsdk.annotations.MarkerOptions()
+                                .position(com.mapbox.mapboxsdk.geometry.LatLng(uLat, uLon))
+                                .title("📍 Tú")
+                        )
+                    }
+
+                    peerMarkers.forEach { marker ->
+                        val markerTitle = if (marker.isExactGps) "👤 ${marker.name} (GPS)" else "📡 ${marker.name} (RSSI aprox)"
+                        maplibreMap.addMarker(
+                            com.mapbox.mapboxsdk.annotations.MarkerOptions()
+                                .position(com.mapbox.mapboxsdk.geometry.LatLng(marker.latitude, marker.longitude))
+                                .title(markerTitle)
+                        )
+                    }
+                }
             }
         )
     } else {

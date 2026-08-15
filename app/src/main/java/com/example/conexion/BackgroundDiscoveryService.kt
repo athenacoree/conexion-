@@ -1,5 +1,6 @@
 package com.example.conexion
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.app.*
 import android.bluetooth.BluetoothAdapter
@@ -10,6 +11,9 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
@@ -69,6 +73,16 @@ class BackgroundDiscoveryService : Service() {
     private var currentBeaconState = BeaconState.IDLE
     private var currentSendingToken = "000000000000"
 
+    // GPS location tracking for BLE advertising
+    private var locationManager: LocationManager? = null
+    private var locationListener: LocationListener? = null
+    private var currentLat: Double = 0.0
+    private var currentLon: Double = 0.0
+    private var hasGpsLocation: Boolean = false
+    private var lastAdvertisedLat: Double = 0.0
+    private var lastAdvertisedLon: Double = 0.0
+    private var lastAdvertisingTime: Long = 0L
+
     private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
     private var sendingTimeoutJob: Job? = null
 
@@ -89,7 +103,7 @@ class BackgroundDiscoveryService : Service() {
     private val recentlyDetectedPeerNames = mutableMapOf<String, String>()
     private val recentlyDetectedPeerAvatars = mutableMapOf<String, Int>()
 
-    // TAREA B: Tracks active sending peers in the last 15 seconds
+    // Tracks active sending peers in the last 15 seconds
     private val activeSendingPeers = mutableMapOf<String, Long>()
 
     // Background instances of WifiP2p and FileTransfer for background connections
@@ -161,7 +175,7 @@ class BackgroundDiscoveryService : Service() {
         fileTransferManager = FileTransferManager(
             context = this,
             dbHelper = dbHelper,
-            onIncomingFileRequest = { fileName, fileSize, onAccept, onReject ->
+            onIncomingFileRequest = { fileName, fileSize, onAccept, _ ->
                 Log.d(tag, "Background incoming file request: $fileName ($fileSize bytes)")
                 onAccept()
             },
@@ -220,6 +234,68 @@ class BackgroundDiscoveryService : Service() {
         }
 
         createNotificationChannel()
+        setupLocationUpdates()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun setupLocationUpdates() {
+        if (locationManager == null) {
+            locationManager = getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+        }
+        if (locationListener == null) {
+            locationListener = object : LocationListener {
+                override fun onLocationChanged(location: Location) {
+                    currentLat = location.latitude
+                    currentLon = location.longitude
+                    hasGpsLocation = true
+                    checkAndUpdateAdvertisingLocation()
+                }
+                @Deprecated("Deprecated in Java")
+                override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) {}
+                override fun onProviderEnabled(provider: String) {}
+                override fun onProviderDisabled(provider: String) {}
+            }
+        }
+        try {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+                locationManager?.requestLocationUpdates(
+                    LocationManager.GPS_PROVIDER,
+                    5000L,
+                    2f,
+                    locationListener!!
+                )
+                locationManager?.requestLocationUpdates(
+                    LocationManager.NETWORK_PROVIDER,
+                    5000L,
+                    2f,
+                    locationListener!!
+                )
+                val lastLoc = locationManager?.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+                    ?: locationManager?.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+                lastLoc?.let {
+                    currentLat = it.latitude
+                    currentLon = it.longitude
+                    hasGpsLocation = true
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(tag, "Failed to setup location updates in service", e)
+        }
+    }
+
+    private fun checkAndUpdateAdvertisingLocation() {
+        val now = System.currentTimeMillis()
+        if (now - lastAdvertisingTime >= 5000) {
+            val distMoved = FloatArray(1)
+            Location.distanceBetween(lastAdvertisedLat, lastAdvertisedLon, currentLat, currentLon, distMoved)
+            if (distMoved[0] > 1.0f || !hasGpsLocation) {
+                Log.d(tag, "GPS location updated (moved ${distMoved[0]}m). Restarting BLE advertising...")
+                lastAdvertisedLat = currentLat
+                lastAdvertisedLon = currentLon
+                lastAdvertisingTime = now
+                startAdvertisingAndScanning()
+            }
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -372,14 +448,16 @@ class BackgroundDiscoveryService : Service() {
                 state = if (currentBeaconState == BeaconState.SENDING) 1 else 0,
                 sessionToken = if (currentBeaconState == BeaconState.SENDING) currentSendingToken else currentSessionToken,
                 avatarIndex = currentAvatarIndex,
-                userName = currentUserName
+                userName = currentUserName,
+                latitude = if (hasGpsLocation) currentLat else null,
+                longitude = if (hasGpsLocation) currentLon else null
             )
             val advData = AdvertiseData.Builder()
                 .addManufacturerData(MANUFACTURER_ID, payload)
                 .build()
 
             advertiser?.startAdvertising(advSettings, advData, advertiseCallback)
-            Log.d(tag, "Started BLE Advertising in state $currentBeaconState with payload size: ${payload.size} bytes")
+            Log.d(tag, "Started BLE Advertising in state $currentBeaconState with payload size: ${payload.size} bytes (GPS: lat=$currentLat, lon=$currentLon)")
 
             val scanFilter = ScanFilter.Builder()
                 .setManufacturerData(MANUFACTURER_ID, byteArrayOf(0), byteArrayOf(0))
@@ -427,6 +505,9 @@ class BackgroundDiscoveryService : Service() {
         super.onDestroy()
         audioBeaconListener?.stop()
         stopAdvertisingAndScanning()
+        try {
+            locationListener?.let { locationManager?.removeUpdates(it) }
+        } catch (e: Exception) {}
         try {
             unregisterReceiver(serviceReceiver)
         } catch (e: Exception) {}
@@ -503,7 +584,7 @@ class BackgroundDiscoveryService : Service() {
 
         recentlyDetectedPeerNames[peer.sessionToken] = peer.userName
         recentlyDetectedPeerAvatars[peer.sessionToken] = peer.avatarIndex
-        Log.d(tag, "Discovered BLE peer: name=${peer.userName}, token=${peer.sessionToken}, state=${peer.state}, avatarIndex=${peer.avatarIndex}")
+        Log.d(tag, "Discovered BLE peer: name=${peer.userName}, token=${peer.sessionToken}, state=${peer.state}, lat=${peer.latitude}, lon=${peer.longitude}")
 
         if (peer.state == 1) {
             activeSendingPeers[peer.sessionToken] = now
@@ -528,6 +609,8 @@ class BackgroundDiscoveryService : Service() {
                         putExtra(EXTRA_PEER_NAME, peer.userName)
                         putExtra(EXTRA_PEER_TOKEN, peer.sessionToken)
                         putExtra("EXTRA_PEER_AVATAR", peer.avatarIndex)
+                        putExtra("EXTRA_PEER_LAT", peer.latitude ?: 0.0)
+                        putExtra("EXTRA_PEER_LON", peer.longitude ?: 0.0)
                         putExtra("EXTRA_IS_AMBIGUOUS", true)
                     }
                     sendBroadcast(intent)
@@ -540,7 +623,7 @@ class BackgroundDiscoveryService : Service() {
 
                     HapticManager.performIPhoneHaptic(this)
 
-                    if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                    if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
                         Log.d(tag, "RECORD_AUDIO permission granted. Starting AudioBeaconListener for token: ${peer.sessionToken}")
                         audioBeaconListener?.start(peer.sessionToken)
                     } else {
@@ -553,6 +636,8 @@ class BackgroundDiscoveryService : Service() {
                         putExtra(EXTRA_PEER_NAME, peer.userName)
                         putExtra(EXTRA_PEER_TOKEN, peer.sessionToken)
                         putExtra("EXTRA_PEER_AVATAR", peer.avatarIndex)
+                        putExtra("EXTRA_PEER_LAT", peer.latitude ?: 0.0)
+                        putExtra("EXTRA_PEER_LON", peer.longitude ?: 0.0)
                         putExtra("EXTRA_IS_AMBIGUOUS", false)
                     }
                     sendBroadcast(intent)
@@ -699,7 +784,14 @@ class BackgroundDiscoveryService : Service() {
         }
     }
 
-    private fun buildManufacturerData(state: Int, sessionToken: String, avatarIndex: Int, userName: String): ByteArray {
+    fun buildManufacturerData(
+        state: Int,
+        sessionToken: String,
+        avatarIndex: Int,
+        userName: String,
+        latitude: Double? = null,
+        longitude: Double? = null
+    ): ByteArray {
         val stream = ByteArrayOutputStream()
         val dos = DataOutputStream(stream)
         dos.writeByte(state)
@@ -717,6 +809,11 @@ class BackgroundDiscoveryService : Service() {
 
         dos.writeByte(avatarIndex)
 
+        val latInt = if (latitude != null) (latitude * 1_000_000.0).toInt() else 0
+        val lonInt = if (longitude != null) (longitude * 1_000_000.0).toInt() else 0
+        dos.writeInt(latInt)
+        dos.writeInt(lonInt)
+
         val nameBytes = userName.toByteArray(Charsets.UTF_8)
         val nameLength = nameBytes.size.coerceAtMost(10)
         dos.write(nameBytes, 0, nameLength)
@@ -724,8 +821,8 @@ class BackgroundDiscoveryService : Service() {
         return stream.toByteArray()
     }
 
-    private fun parseManufacturerData(data: ByteArray, rssi: Int = -60, distanceMeters: Double = 1.0): BlePeer? {
-        if (data.size < 8) return null
+    fun parseManufacturerData(data: ByteArray, rssi: Int = -60, distanceMeters: Double = 1.0): BlePeer? {
+        if (data.size < 16) return null
         return try {
             val buffer = ByteBuffer.wrap(data)
             val state = buffer.get().toInt()
@@ -736,7 +833,12 @@ class BackgroundDiscoveryService : Service() {
 
             val avatarIndex = buffer.get().toInt()
 
-            val nameBytes = ByteArray(data.size - 8)
+            val latInt = buffer.getInt()
+            val lonInt = buffer.getInt()
+            val latitude = if (latInt != 0 || lonInt != 0) latInt / 1_000_000.0 else null
+            val longitude = if (latInt != 0 || lonInt != 0) lonInt / 1_000_000.0 else null
+
+            val nameBytes = ByteArray(data.size - 16)
             buffer.get(nameBytes)
             val userName = String(nameBytes, Charsets.UTF_8).trim()
 
@@ -746,7 +848,9 @@ class BackgroundDiscoveryService : Service() {
                 state = state,
                 avatarIndex = avatarIndex,
                 rssi = rssi,
-                distanceMeters = distanceMeters
+                distanceMeters = distanceMeters,
+                latitude = latitude,
+                longitude = longitude
             )
         } catch (e: Exception) {
             Log.e(tag, "Failed to parse manufacturer data", e)
@@ -760,7 +864,9 @@ class BackgroundDiscoveryService : Service() {
         val state: Int,
         val avatarIndex: Int = 0,
         val rssi: Int = -60,
-        val distanceMeters: Double = 1.0
+        val distanceMeters: Double = 1.0,
+        val latitude: Double? = null,
+        val longitude: Double? = null
     ) {
         val formattedDistance: String
             get() = if (distanceMeters < 1.0) {

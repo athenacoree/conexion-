@@ -60,6 +60,8 @@ fun RadarTabScreen(
     downloadProgress: Float,
     currentMapFile: File?,
     gpsDetectedMunicipality: MunicipalityItem?,
+    userLocation: Pair<Double, Double>? = null,
+    peerMarkers: List<PeerMapMarker> = emptyList(),
     onSelectMunicipality: (MunicipalityItem) -> Unit,
     onDownloadMap: (MunicipalityItem) -> Unit,
     onShareMapP2P: (File) -> Unit,
@@ -254,7 +256,9 @@ fun RadarTabScreen(
                 // MapLibre Vector Map View Component
                 OfflineMapView(
                     mapFile = currentMapFile,
-                    isDark = isDark
+                    isDark = isDark,
+                    userLocation = userLocation,
+                    peerMarkers = peerMarkers
                 )
             }
         }

@@ -82,6 +82,7 @@ class MainActivity : ComponentActivity() {
 
     private var selectedMunicipality = mutableStateOf<MunicipalityItem?>(null)
     private var gpsDetectedMunicipality = mutableStateOf<MunicipalityItem?>(null)
+    private var userLocationState = mutableStateOf<Pair<Double, Double>?>(null)
     private var isMapDownloading = mutableStateOf(false)
     private var downloadMapProgress = mutableStateOf(0f)
     private var currentMapFile = mutableStateOf<File?>(null)
@@ -192,7 +193,7 @@ class MainActivity : ComponentActivity() {
     // Pending Uris from Share Sheet
     private var pendingShareUris = mutableStateOf<List<Uri>>(emptyList())
 
-    // App Theme State (Feature 2)
+    // App Theme State
     private var currentThemeIndex = mutableStateOf(0)
     private var isDarkMode = mutableStateOf(false)
 
@@ -210,9 +211,20 @@ class MainActivity : ComponentActivity() {
                 val token = intent.getStringExtra(BackgroundDiscoveryService.EXTRA_PEER_TOKEN) ?: "000000000000"
                 val avatarIdx = intent.getIntExtra("EXTRA_PEER_AVATAR", 0)
                 val isAmbiguous = intent.getBooleanExtra("EXTRA_IS_AMBIGUOUS", false)
-                Log.d(tag, "Received BLE peer sending: $name, token=$token, isAmbiguous=$isAmbiguous, avatarIndex=$avatarIdx")
+                val lat = intent.getDoubleExtra("EXTRA_PEER_LAT", 0.0)
+                val lon = intent.getDoubleExtra("EXTRA_PEER_LON", 0.0)
+                val latitude = if (lat != 0.0) lat else null
+                val longitude = if (lon != 0.0) lon else null
+                Log.d(tag, "Received BLE peer sending: $name, token=$token, isAmbiguous=$isAmbiguous, avatarIndex=$avatarIdx, lat=$latitude, lon=$longitude")
 
-                val peer = BackgroundDiscoveryService.BlePeer(name, token, 1, avatarIdx)
+                val peer = BackgroundDiscoveryService.BlePeer(
+                    userName = name,
+                    sessionToken = token,
+                    state = 1,
+                    avatarIndex = avatarIdx,
+                    latitude = latitude,
+                    longitude = longitude
+                )
                 sendingCandidates[token] = peer
                 blePeersMap[token] = peer
 
@@ -377,12 +389,6 @@ class MainActivity : ComponentActivity() {
             streamConfirmationPrompt.value = StreamPrompt(type, peerId, peerName) { accepted ->
                 decisionCallback(accepted)
                 if (accepted) {
-                    val info = currentConnectionInfo.value
-                    val hostAddress = if (info?.isGroupOwner == true) {
-                        fileTransferManager.lastClientIpAddress ?: "192.168.49.2"
-                    } else {
-                        info?.groupOwnerAddress?.hostAddress ?: "192.168.49.1"
-                    }
                     if (type == "SCREEN") {
                         isReceivingScreenStream.value = true
                         streamManager.startScreenServer()
@@ -538,6 +544,7 @@ class MainActivity : ComponentActivity() {
             } else null
 
             lastLoc?.let { loc ->
+                userLocationState.value = Pair(loc.latitude, loc.longitude)
                 val detected = mapManager.findMunicipalityForLocation(loc.latitude, loc.longitude)
                 if (detected != null) {
                     gpsDetectedMunicipality.value = detected
@@ -582,6 +589,19 @@ class MainActivity : ComponentActivity() {
         requestAllPermissions()
     }
 
+    private fun calculateRssiFallbackLocation(
+        userLat: Double,
+        userLon: Double,
+        distanceMeters: Double,
+        token: String
+    ): Pair<Double, Double> {
+        val bearingDeg = ((token.hashCode() and 0x7FFFFFFF) % 360).toDouble()
+        val bearingRad = Math.toRadians(bearingDeg)
+        val dLat = (distanceMeters * Math.cos(bearingRad)) / 111000.0
+        val dLon = (distanceMeters * Math.sin(bearingRad)) / (111000.0 * Math.cos(Math.toRadians(userLat)))
+        return Pair(userLat + dLat, userLon + dLon)
+    }
+
     private fun loadChatMessagesForPeer(peerDeviceId: String) {
         val msgs = dbHelper.getChatMessages(peerDeviceId)
         chatMessages.clear()
@@ -601,8 +621,19 @@ class MainActivity : ComponentActivity() {
             val token = intent.getStringExtra(BackgroundDiscoveryService.EXTRA_PEER_TOKEN) ?: "000000000000"
             val state = intent.getIntExtra("EXTRA_PEER_STATE", 0)
             val avatarIdx = intent.getIntExtra("EXTRA_PEER_AVATAR", 0)
+            val lat = intent.getDoubleExtra("EXTRA_PEER_LAT", 0.0)
+            val lon = intent.getDoubleExtra("EXTRA_PEER_LON", 0.0)
+            val latitude = if (lat != 0.0) lat else null
+            val longitude = if (lon != 0.0) lon else null
             Log.d(tag, "Handled launch intent with BLE match: $name, token=$token, avatarIndex=$avatarIdx")
-            val peer = BackgroundDiscoveryService.BlePeer(name, token, state, avatarIdx)
+            val peer = BackgroundDiscoveryService.BlePeer(
+                userName = name,
+                sessionToken = token,
+                state = state,
+                avatarIndex = avatarIdx,
+                latitude = latitude,
+                longitude = longitude
+            )
             sendingCandidates[token] = peer
             blePeersMap[token] = peer
             showSingleCandidateManual.value = token
@@ -946,7 +977,7 @@ class MainActivity : ComponentActivity() {
     @Composable
     fun AppScreen() {
         val context = LocalContext.current
-        var currentTab by remember { mutableStateOf(0) } // 0: Radar, 1: Chats, 2: Envíos, 3: Media, 4: Ajustes
+        var currentTab by remember { mutableStateOf(0) }
 
         var isAirDropSheetOpen by remember { mutableStateOf(false) }
 
@@ -977,8 +1008,34 @@ class MainActivity : ComponentActivity() {
         var selectedPeerForActions by remember { mutableStateOf<PeerInfo?>(null) }
         var selectedBlePeerForActions by remember { mutableStateOf<BackgroundDiscoveryService.BlePeer?>(null) }
 
+        val peerMarkers = remember(peersState.value, blePeersMap.values.toList(), userLocationState.value) {
+            val markers = mutableListOf<PeerMapMarker>()
+            val uLoc = userLocationState.value
+
+            blePeersMap.values.forEach { bpeer ->
+                if (bpeer.latitude != null && bpeer.longitude != null) {
+                    markers.add(PeerMapMarker(bpeer.sessionToken, bpeer.userName, bpeer.latitude, bpeer.longitude, isExactGps = true))
+                } else if (uLoc != null) {
+                    val (fLat, fLon) = calculateRssiFallbackLocation(uLoc.first, uLoc.second, bpeer.distanceMeters, bpeer.sessionToken)
+                    markers.add(PeerMapMarker(bpeer.sessionToken, bpeer.userName, fLat, fLon, isExactGps = false))
+                }
+            }
+
+            peersState.value.forEach { peer ->
+                if (markers.none { it.id == peer.sessionToken }) {
+                    if (peer.latitude != null && peer.longitude != null) {
+                        markers.add(PeerMapMarker(peer.sessionToken, peer.userName, peer.latitude, peer.longitude, isExactGps = true))
+                    } else if (uLoc != null) {
+                        val (fLat, fLon) = calculateRssiFallbackLocation(uLoc.first, uLoc.second, peer.distanceMeters, peer.sessionToken)
+                        markers.add(PeerMapMarker(peer.sessionToken, peer.userName, fLat, fLon, isExactGps = false))
+                    }
+                }
+            }
+
+            markers
+        }
+
         Column(modifier = Modifier.fillMaxSize()) {
-            // Dynamic Island Capsule Header Bar
             DynamicIslandBar(
                 isDark = isDarkMode.value,
                 isConnected = currentConnectionInfo.value?.groupFormed ?: false,
@@ -998,7 +1055,6 @@ class MainActivity : ComponentActivity() {
                 }
             )
 
-            // Main Tab Content Area
             Box(modifier = Modifier.weight(1f)) {
                 when (currentTab) {
                     0 -> RadarTabScreen(
@@ -1017,6 +1073,8 @@ class MainActivity : ComponentActivity() {
                         downloadProgress = downloadMapProgress.value,
                         currentMapFile = currentMapFile.value,
                         gpsDetectedMunicipality = gpsDetectedMunicipality.value,
+                        userLocation = userLocationState.value,
+                        peerMarkers = peerMarkers,
                         onSelectMunicipality = { item ->
                             selectedMunicipality.value = item
                             if (mapManager.isMapDownloaded(item)) {
@@ -1200,7 +1258,6 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            // Modern iOS Glassmorphism Bottom Navigation Bar
             NavigationBar(
                 containerColor = if (isDarkMode.value) Color(0xFF161F2E).copy(alpha = 0.95f) else Color(0xFFFFFFFF).copy(alpha = 0.95f),
                 tonalElevation = 8.dp
@@ -1238,7 +1295,6 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // AirDrop Bottom Sheet Overlay
         AirDropBottomSheet(
             isOpen = isAirDropSheetOpen,
             onDismiss = { isAirDropSheetOpen = false },
@@ -1258,7 +1314,6 @@ class MainActivity : ComponentActivity() {
             onToggleSearch = { wifiP2pHelper.startDiscovery() }
         )
 
-        // Connection Prompts & Action Dialogs
         connectionPromptPeer.value?.let { peer ->
             AlertDialog(
                 onDismissRequest = { connectionPromptPeer.value = null },
@@ -1297,7 +1352,7 @@ class MainActivity : ComponentActivity() {
                                 activeChatPeerName.value = peer.userName
                                 loadChatMessagesForPeer(peer.sessionToken)
                                 sessionManager.sendChatRequest(myNameState.value)
-                                currentTab = 1 // Switch to chats tab!
+                                currentTab = 1
                                 selectedPeerForActions = null
                             },
                             modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
@@ -1363,7 +1418,6 @@ class MainActivity : ComponentActivity() {
             )
         }
 
-        // Chat Request Dialog
         chatRequestPrompt.value?.let { prompt ->
             AlertDialog(
                 onDismissRequest = {
@@ -1390,7 +1444,6 @@ class MainActivity : ComponentActivity() {
             )
         }
 
-        // Contact Request Dialog
         contactRequestPrompt.value?.let { prompt ->
             AlertDialog(
                 onDismissRequest = {
@@ -1416,7 +1469,6 @@ class MainActivity : ComponentActivity() {
             )
         }
 
-        // Stream Confirmation Request Dialog
         streamConfirmationPrompt.value?.let { prompt ->
             AlertDialog(
                 onDismissRequest = {
@@ -1442,7 +1494,6 @@ class MainActivity : ComponentActivity() {
             )
         }
 
-        // Live Screen Stream Receiver Overlay
         if (isReceivingScreenStream.value) {
             AlertDialog(
                 onDismissRequest = {
@@ -1514,9 +1565,4 @@ class MainActivity : ComponentActivity() {
             )
         }
     }
-
-
-
-
-
 }
