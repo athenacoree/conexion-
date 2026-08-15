@@ -176,6 +176,9 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation("io.coil-kt:coil-compose:2.6.0")
 
+    // MapLibre GL Native SDK for Android
+    implementation("org.maplibre.gl:android-sdk:10.2.0")
+
     // Ktor Server 2.3.12 dependencies
     implementation("io.ktor:ktor-server-core:2.3.12")
     implementation("io.ktor:ktor-server-netty:2.3.12")

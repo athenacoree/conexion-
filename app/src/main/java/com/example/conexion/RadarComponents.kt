@@ -179,6 +179,81 @@ fun DynamicIslandBar(
 }
 
 @Composable
+fun OfflineMapView(
+    mapFile: java.io.File?,
+    isDark: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val styleJson = remember {
+        try {
+            context.assets.open("protomaps_style.json").bufferedReader().use { it.readText() }
+        } catch (e: Exception) {
+            ""
+        }
+    }
+
+    if (mapFile != null && mapFile.exists() && styleJson.isNotEmpty()) {
+        androidx.compose.ui.viewinterop.AndroidView(
+            modifier = modifier
+                .fillMaxWidth()
+                .height(280.dp)
+                .clip(RoundedCornerShape(24.dp)),
+            factory = { ctx ->
+                com.mapbox.mapboxsdk.Mapbox.getInstance(ctx)
+                com.mapbox.mapboxsdk.maps.MapView(ctx).apply {
+                    onCreate(null)
+                    getMapAsync { maplibreMap ->
+                        maplibreMap.setStyle(
+                            com.mapbox.mapboxsdk.maps.Style.Builder().fromJson(styleJson)
+                        ) {
+                            maplibreMap.cameraPosition = com.mapbox.mapboxsdk.camera.CameraPosition.Builder()
+                                .tilt(50.0) // 3D Perspective Pitch (between 45° and 60°)
+                                .build()
+
+                            maplibreMap.uiSettings.apply {
+                                isRotateGesturesEnabled = true
+                                isTiltGesturesEnabled = true
+                                isZoomGesturesEnabled = true
+                                isScrollGesturesEnabled = true
+                            }
+                        }
+                    }
+                }
+            },
+            update = { mapView ->
+                mapView.onResume()
+            }
+        )
+    } else {
+        Box(
+            modifier = modifier
+                .fillMaxWidth()
+                .height(180.dp)
+                .clip(RoundedCornerShape(24.dp))
+                .background(if (isDark) Color(0xFF1E293B) else Color(0xFFF1F5F9))
+                .border(
+                    1.dp,
+                    if (isDark) Color.White.copy(alpha = 0.1f) else Color(0xFFCBD5E1),
+                    RoundedCornerShape(24.dp)
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("🗺️", fontSize = 36.sp)
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    "Selecciona y descarga el mapa de tu municipio",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
 fun PeerStoriesCarousel(
     myAvatarIndex: Int,
     myName: String,
