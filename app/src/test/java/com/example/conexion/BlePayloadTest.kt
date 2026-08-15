@@ -9,7 +9,7 @@ class BlePayloadTest {
     fun testBlePayloadEncodingAndDecodingWithGps() {
         val service = BackgroundDiscoveryService()
         val token = "A1B2C3D4E5F6"
-        val userName = "Device1"
+        val userName = "User1"
         val lat = 23.1136
         val lon = -82.3666
         val avatarIndex = 2

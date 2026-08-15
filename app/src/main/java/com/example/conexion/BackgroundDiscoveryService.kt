@@ -815,7 +815,7 @@ class BackgroundDiscoveryService : Service() {
         dos.writeInt(lonInt)
 
         val nameBytes = userName.toByteArray(Charsets.UTF_8)
-        val nameLength = nameBytes.size.coerceAtMost(10)
+        val nameLength = nameBytes.size.coerceAtMost(6)
         dos.write(nameBytes, 0, nameLength)
 
         return stream.toByteArray()
@@ -838,7 +838,7 @@ class BackgroundDiscoveryService : Service() {
             val latitude = if (latInt != 0 || lonInt != 0) latInt / 1_000_000.0 else null
             val longitude = if (latInt != 0 || lonInt != 0) lonInt / 1_000_000.0 else null
 
-            val nameBytes = ByteArray(data.size - 16)
+            val nameBytes = ByteArray(buffer.remaining())
             buffer.get(nameBytes)
             val userName = String(nameBytes, Charsets.UTF_8).trim()
 
