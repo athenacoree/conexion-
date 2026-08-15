@@ -24,7 +24,9 @@ data class PeerInfo(
     val avatarIndex: Int = 0,
     val phoneNumber: String = "",
     val rssi: Int = -60,
-    val distanceMeters: Double = 1.0
+    val distanceMeters: Double = 1.0,
+    val latitude: Double? = null,
+    val longitude: Double? = null
 ) {
     val formattedDistance: String
         get() = if (distanceMeters < 1.0) {
@@ -257,17 +259,12 @@ class WifiP2pHelper(
                     tokenToPeerMap[token] = peer
                     onPeersDiscovered(discoveredServicePeers.values.toList())
 
-                    // TAREA 6 & Code Review feedback: We must NOT connect automatically nor show premature connection prompts
-                    // without explicit ultrasonic/manual validation flow context.
-                    // Instead of connecting or prompt immediately, we let the ultrasonic decode match trigger connection prompt.
                     if (pendingTargetToken != null && pendingTargetToken == token) {
                         Log.d(tag, "Discovered service record matching target token: $token")
                         pendingTargetToken = null
                         pendingTargetName = null
                         onConnectionRequestReceived(peer)
                     } else {
-                        // FIX 2b: TXT record discovery alone MUST NEVER trigger the confirmation dialog automatically.
-                        // It must only be registered in discoveredServicePeers/tokenToPeerMap as an available candidate.
                         Log.d(tag, "Discovered service peer (no matching pending target token): name=${peer.userName}, token=${peer.sessionToken}")
                     }
                 }
