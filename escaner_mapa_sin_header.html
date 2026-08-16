@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Escáner · Mapa</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/3.6.2/maplibre-gl.min.js"></script>
+<link href="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/3.6.2/maplibre-gl.min.css" rel="stylesheet">
+<script src="https://unpkg.com/pmtiles@3.0.6/dist/pmtiles.js"></script>
+<style>
+  :root{
+    --blue-1:#2F8CFF;
+    --blue-2:#0B6CFF;
+    --bg:#000000;
+    --divider:rgba(84,84,88,0.42);
+    --system-gray:#8E8E93;
+    --card:#1C1C1E;
+    --card-2:#232326;
+    --green:#34C759;
+    --red:#FF3B30;
+    --yellow:#FFD60A;
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{
+    height:100%;
+    background:var(--bg);
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display","Helvetica Neue",Arial,sans-serif;
+    overflow:hidden;
+    color:#fff;
+  }
+  .app{
+    width:100%;
+    height:100dvh;
+    height:100vh;
+    background:#000;
+    position:relative;
+    overflow:hidden;
+  }
+
+  /* ============ MAPA FULL SCREEN (de borde a borde, sin header) ============ */
+  #map{
+    position:absolute;
+    inset:0;
+    background:#0a0a0c;
+    opacity:0;
+    transform:scale(1.04);
+    filter:blur(6px) saturate(1.15);
+    transition:opacity 1.1s ease, transform 1.4s cubic-bezier(.2,.8,.2,1), filter 1.1s ease;
+  }
+  #map.ready{ opacity:1; transform:scale(1); filter:blur(0) saturate(1.08); }
+
+  .maplibregl-ctrl-attrib{
+    background:rgba(10,10,12,0.55) !important;
+    -webkit-backdrop-filter:blur(10px);
+    backdrop-filter:blur(10px);
+    color:var(--system-gray) !important;
+    font-size:9.5px !important;
+    border-radius:8px 0 0 0;
+  }
+  .maplibregl-ctrl-attrib a{color:var(--system-gray) !important;}
+  .maplibregl-ctrl-bottom-right{ bottom: calc(90px + var(--safe-bottom)) !important; }
+  .maplibregl-ctrl-logo{display:none !important;}
+
+  /* viñeta sutil para dar profundidad al 3D, incluye sombreado arriba para status bar del sistema */
+  .vignette{
+    position:absolute; inset:0; z-index:4; pointer-events:none;
+    background:
+      radial-gradient(ellipse at 50% 45%, rgba(0,0,0,0) 45%, rgba(0,0,0,0.5) 100%),
+      linear-gradient(180deg, rgba(0,0,0,0.45) 0%, rgba(0,0,0,0) 14%);
+  }
+
+  /* ============ SCAN SWEEP OVERLAY ============ */
+  .scan-overlay{
+    position:absolute;
+    inset:0;
+    pointer-events:none;
+    z-index:5;
+    mix-blend-mode:screen;
+    opacity:0.6;
+  }
+  .scan-ring{
+    position:absolute;
+    top:50%;left:50%;
+    width:60px;height:60px;
+    border:1.5px solid rgba(47,140,255,0.9);
+    border-radius:50%;
+    transform:translate(-50%,-50%);
+    box-shadow:0 0 18px rgba(47,140,255,0.55);
+  }
+  .scan-ring.r2,.scan-ring.r3{
+    animation:scanPulse 2.6s cubic-bezier(.2,.6,.3,1) infinite;
+  }
+  .scan-ring.r3{animation-delay:1.3s;}
+  @keyframes scanPulse{
+    0%{width:60px;height:60px;opacity:0.85;}
+    100%{width:560px;height:560px;opacity:0;}
+  }
+  .scan-dot{
+    position:absolute;top:50%;left:50%;
+    width:9px;height:9px;border-radius:50%;
+    background:var(--blue-1);
+    box-shadow:0 0 10px 3px rgba(47,140,255,0.8);
+    transform:translate(-50%,-50%);
+    animation:dotGlow 1.8s ease-in-out infinite;
+  }
+  @keyframes dotGlow{
+    0%,100%{ box-shadow:0 0 10px 3px rgba(47,140,255,0.8); }
+    50%{ box-shadow:0 0 18px 7px rgba(47,140,255,0.5); }
+  }
+
+  /* ============ PILDORA DE ESTADO FLOTANTE (arriba, sin barra) ============ */
+  .status-pill{
+    position:absolute;
+    top:calc(var(--safe-top) + 10px);
+    left:50%;
+    transform:translateX(-50%) translateY(-30px);
+    z-index:45;
+    display:flex;
+    align-items:center;
+    gap:7px;
+    padding:8px 14px;
+    background:rgba(28,28,30,0.72);
+    border:0.5px solid rgba(255,255,255,0.08);
+    -webkit-backdrop-filter:blur(20px) saturate(180%);
+    backdrop-filter:blur(20px) saturate(180%);
+    border-radius:20px;
+    font-size:12.5px;
+    font-weight:500;
+    color:#fff;
+    box-shadow:0 6px 18px rgba(0,0,0,0.35);
+    opacity:0;
+    animation:pillIn 0.55s 0.2s cubic-bezier(.2,.85,.25,1) forwards;
+  }
+  @keyframes pillIn{ to{ opacity:1; transform:translateX(-50%) translateY(0); } }
+  .status-pill .status-dot{
+    width:7px;height:7px;border-radius:50%;
+    background:var(--blue-1);
+    box-shadow:0 0 6px rgba(47,140,255,0.9);
+    animation:blink 1.1s ease-in-out infinite;
+    flex-shrink:0;
+  }
+  .status-pill .status-dot.idle{background:var(--green);box-shadow:0 0 6px rgba(52,199,89,0.8);animation:none;}
+  @keyframes blink{0%,100%{opacity:1;}50%{opacity:0.35;}}
+  .status-pill b{color:var(--blue-1);font-weight:700;}
+
+  /* botón refrescar flotante junto a la píldora */
+  .btn-refresh-float{
+    position:absolute;
+    top:calc(var(--safe-top) + 10px);
+    right:12px;
+    z-index:45;
+    width:34px;height:34px;
+    border-radius:50%;
+    background:rgba(28,28,30,0.72);
+    border:0.5px solid rgba(255,255,255,0.08);
+    -webkit-backdrop-filter:blur(20px) saturate(180%);
+    backdrop-filter:blur(20px) saturate(180%);
+    display:flex;align-items:center;justify-content:center;
+    color:#fff;
+    box-shadow:0 6px 18px rgba(0,0,0,0.35);
+    opacity:0;
+    animation:fadeInTop 0.55s 0.25s cubic-bezier(.2,.85,.25,1) forwards;
+  }
+  @keyframes fadeInTop{ to{ opacity:1; } }
+  .btn-refresh-float svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:2;transition:transform 0.4s cubic-bezier(.3,1.6,.4,1);}
+  .btn-refresh-float:active svg{transform:rotate(180deg);}
+  .btn-refresh-float:active{transform:scale(0.9);background:rgba(44,44,46,0.85);}
+
+  /* ============ FLOATING MAP CONTROLS (lateral derecho) ============ */
+  .map-controls{
+    position:absolute;
+    right:12px;
+    bottom:calc(100px + var(--safe-bottom));
+    z-index:40;
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+    opacity:0;
+    transform:translateX(20px);
+    animation:fadeInRight 0.6s 0.4s cubic-bezier(.2,.8,.25,1) forwards;
+  }
+  @keyframes fadeInRight{ to{ opacity:1; transform:translateX(0); } }
+
+  .ctrl-btn{
+    width:42px;height:42px;
+    border-radius:14px;
+    background:rgba(28,28,30,0.72);
+    border:0.5px solid rgba(255,255,255,0.08);
+    -webkit-backdrop-filter:blur(18px) saturate(160%);
+    backdrop-filter:blur(18px) saturate(160%);
+    display:flex;align-items:center;justify-content:center;
+    color:#fff;
+    box-shadow:0 4px 14px rgba(0,0,0,0.35);
+    transition:transform 0.18s cubic-bezier(.3,1.6,.4,1), background 0.2s, color 0.2s;
+  }
+  .ctrl-btn svg{width:19px;height:19px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;transition:transform 0.3s;}
+  .ctrl-btn:active{transform:scale(0.9);background:rgba(44,44,46,0.85);}
+  .ctrl-btn.active{color:var(--blue-1);box-shadow:0 0 0 1px rgba(47,140,255,0.5), 0 4px 14px rgba(47,140,255,0.25);}
+  .ctrl-btn.active svg{fill:rgba(47,140,255,0.16);}
+
+  /* ============ BOTTOM SHEET (device found) ============ */
+  .found-sheet{
+    position:absolute;
+    left:10px;right:10px;
+    bottom:calc(96px + var(--safe-bottom));
+    z-index:46;
+    background:rgba(28,28,30,0.78);
+    border:0.5px solid rgba(255,255,255,0.08);
+    -webkit-backdrop-filter:blur(24px) saturate(180%);
+    backdrop-filter:blur(24px) saturate(180%);
+    border-radius:18px;
+    padding:12px 14px;
+    display:flex;
+    align-items:center;
+    gap:12px;
+    box-shadow:0 10px 30px rgba(0,0,0,0.4);
+    transform:translateY(140%) scale(0.96);
+    opacity:0;
+    transition:transform 0.5s cubic-bezier(.2,.85,.25,1), opacity 0.4s ease;
+  }
+  .found-sheet.show{transform:translateY(0) scale(1); opacity:1;}
+  .found-avatar{
+    width:42px;height:42px;border-radius:50%;
+    background:linear-gradient(135deg,var(--blue-1),var(--blue-2));
+    display:flex;align-items:center;justify-content:center;
+    font-weight:700;font-size:15px;flex-shrink:0;
+    box-shadow:0 0 0 3px rgba(47,140,255,0.15);
+  }
+  .found-info{flex:1;min-width:0;}
+  .found-name{font-size:15px;font-weight:600;}
+  .found-meta{font-size:12.5px;color:var(--system-gray);margin-top:1px;}
+  .found-connect{
+    background:var(--blue-1);
+    border:none;color:#fff;
+    font-size:13.5px;font-weight:600;
+    padding:8px 14px;border-radius:20px;
+    flex-shrink:0;
+    transition:transform 0.15s, opacity 0.15s;
+  }
+  .found-connect:active{opacity:0.7;transform:scale(0.95);}
+
+  /* ============ BOTTOM TAB BAR (única barra fija) ============ */
+  .tab-bar{
+    position:absolute;
+    left:0;right:0;bottom:0;
+    z-index:50;
+    display:flex;
+    padding-top:6px;
+    padding-bottom:calc(4px + var(--safe-bottom));
+    background:rgba(10,10,12,0.82);
+    -webkit-backdrop-filter:saturate(180%) blur(20px);
+    backdrop-filter:saturate(180%) blur(20px);
+    border-top:0.5px solid var(--divider);
+    transform:translateY(100%);
+    animation:slideUp 0.6s 0.1s cubic-bezier(.2,.8,.25,1) forwards;
+  }
+  @keyframes slideUp{ to{ transform:translateY(0); } }
+
+  .tab-item{
+    flex:1;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:2px;
+    color:var(--system-gray);
+    font-size:10.5px;
+    font-weight:500;
+    padding:2px 0;
+    transition:color 0.2s;
+  }
+  .tab-item svg{width:24px;height:24px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;transition:transform 0.2s;}
+  .tab-item:active svg{transform:scale(0.85);}
+  .tab-item.active{color:var(--blue-1);}
+  .tab-item.active svg{fill:rgba(11,108,255,0.14);}
+
+  /* ============ LOADING STATE ============ */
+  .map-loading{
+    position:absolute;inset:0;
+    z-index:20;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    gap:14px;
+    background:radial-gradient(circle at 50% 45%, #0d1014 0%, #08080a 70%);
+    transition:opacity 0.5s ease, visibility 0.5s;
+  }
+  .map-loading.hide{opacity:0;visibility:hidden;pointer-events:none;}
+  .spinner{
+    width:36px;height:36px;
+    border-radius:50%;
+    border:3px solid rgba(255,255,255,0.12);
+    border-top-color:var(--blue-1);
+    border-right-color:rgba(47,140,255,0.4);
+    animation:spin 0.9s linear infinite;
+  }
+  @keyframes spin{to{transform:rotate(360deg);}}
+  .map-loading p{font-size:13px;color:var(--system-gray);letter-spacing:0.2px;}
+  .map-loading .err{color:var(--red);font-size:13px;padding:0 40px;text-align:center;line-height:1.5;}
+  .map-loading .hint{font-size:11.5px;color:#5b6470;padding:0 40px;text-align:center;margin-top:-4px;}
+
+  /* mini legend flotante abajo a la izquierda */
+  .legend{
+    position:absolute;
+    left:12px;
+    bottom:calc(100px + var(--safe-bottom));
+    z-index:40;
+    background:rgba(28,28,30,0.7);
+    border:0.5px solid rgba(255,255,255,0.08);
+    -webkit-backdrop-filter:blur(18px);
+    backdrop-filter:blur(18px);
+    border-radius:12px;
+    padding:7px 10px;
+    font-size:10.5px;
+    color:var(--system-gray);
+    display:flex;
+    align-items:center;
+    gap:6px;
+    opacity:0;
+    animation:fadeIn 0.6s 0.6s ease forwards;
+  }
+  @keyframes fadeIn{ to{ opacity:1; } }
+  .legend .live-dot{
+    width:8px;height:8px;border-radius:50%;background:var(--blue-1);display:inline-block;
+    box-shadow:0 0 6px rgba(47,140,255,0.8);
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <div id="map"></div>
+  <div class="vignette"></div>
+
+  <div class="scan-overlay" id="scanOverlay">
+    <div class="scan-ring r2"></div>
+    <div class="scan-ring r3"></div>
+    <div class="scan-dot"></div>
+  </div>
+
+  <div class="map-loading" id="mapLoading">
+    <div class="spinner"></div>
+    <p id="loadingText">Cargando mapa offline…</p>
+  </div>
+
+  <!-- Píldora de estado flotante, sin barra superior -->
+  <div class="status-pill" id="statusPill">
+    <span class="status-dot" id="statusDot"></span>
+    <span id="statusText"><b id="deviceCount">0</b> dispositivos cerca</span>
+  </div>
+  <button class="btn-refresh-float" id="btnRefresh">
+    <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4M21 4v5h-5"/></svg>
+  </button>
+
+  <div class="legend"><span class="live-dot"></span> <b style="color:#fff">Artemisa</b> · Güira de Melena — offline</div>
+
+  <div class="map-controls">
+    <button class="ctrl-btn active" id="btn3d" title="3D">
+      <svg viewBox="0 0 24 24"><path d="M12 2l9 5v10l-9 5-9-5V7z"/><path d="M3 7l9 5 9-5M12 12v10"/></svg>
+    </button>
+    <button class="ctrl-btn" id="btnCompass" title="Norte">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6l3 6-3 6-3-6z" fill="currentColor" stroke="none"/></svg>
+    </button>
+    <button class="ctrl-btn" id="btnLocate" title="Mi ubicación">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>
+    </button>
+  </div>
+
+  <div class="found-sheet" id="foundSheet">
+    <div class="found-avatar">DM</div>
+    <div class="found-info">
+      <div class="found-name">Dispositivo cercano</div>
+      <div class="found-meta">A 42 m · señal fuerte</div>
+    </div>
+    <button class="found-connect">Conectar</button>
+  </div>
+
+  <div class="tab-bar">
+    <div class="tab-item active">
+      <svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 1 3.3 6.5"/><path d="M4 12V6"/><path d="M4 12H2"/><circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none"/></svg>
+      <span>Escáner</span>
+    </div>
+    <div class="tab-item">
+      <svg viewBox="0 0 24 24"><path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+      <span>Chats</span>
+    </div>
+    <div class="tab-item">
+      <svg viewBox="0 0 24 24"><path d="M12 3v13m0 0l-4-4m4 4l4-4M4 17v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg>
+      <span>Envíos</span>
+    </div>
+    <div class="tab-item">
+      <svg viewBox="0 0 24 24"><rect x="3" y="4" width="14" height="12" rx="2"/><path d="M17 9l4-2.5v11L17 15"/></svg>
+      <span>Media</span>
+    </div>
+    <div class="tab-item">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+      <span>Ajustes</span>
+    </div>
+  </div>
+
+</div>
+
+<script>
+/* ======================================================================
+   CONFIGURA AQUÍ LA RUTA DE TU ARCHIVO .pmtiles
+   - Puede ser una ruta relativa dentro de tu app: "./maps/artemisa.pmtiles"
+   - O una URL http(s) donde lo alojes
+   ====================================================================== */
+const PMTILES_URL = "./map_Artemisa_Guira_de_Melena.pmtiles";
+
+const SRC = "localmap";
+const protocol = new pmtiles.Protocol();
+maplibregl.addProtocol("pmtiles", protocol.tile);
+const pmt = new pmtiles.PMTiles(PMTILES_URL);
+protocol.add(pmt);
+
+function buildStyle(){
+  return {
+    version: 8,
+    glyphs: "https://protomaps.github.io/basemaps-assets/fonts/{fontstack}/{range}.pbf",
+    sources: {
+      [SRC]: { type: "vector", url: "pmtiles://" + PMTILES_URL, attribution: "© OpenStreetMap contributors, Protomaps" }
+    },
+    layers: [
+      { id:"bg", type:"background", paint:{ "background-color":"#0b0d10" } },
+      { id:"earth", type:"fill", source:SRC, "source-layer":"earth", paint:{ "fill-color":"#0e1013" } },
+      { id:"landcover", type:"fill", source:SRC, "source-layer":"landcover", paint:{ "fill-color":"#12161a", "fill-opacity":0.6 } },
+      { id:"landuse-park", type:"fill", source:SRC, "source-layer":"landuse",
+        filter:["in",["get","kind"],["literal",["park","nature_reserve","forest","wood","grass","cemetery"]]],
+        paint:{ "fill-color":"#132018", "fill-opacity":0.8 } },
+      { id:"water", type:"fill", source:SRC, "source-layer":"water", paint:{ "fill-color":"#0d2440" } },
+      { id:"landuse-other", type:"fill", source:SRC, "source-layer":"landuse", paint:{ "fill-color":"#15181c", "fill-opacity":0.5 } },
+      { id:"buildings-flat", type:"fill", source:SRC, "source-layer":"buildings",
+        minzoom:0, maxzoom:14,
+        paint:{ "fill-color":"#22262b", "fill-outline-color":"#2f8cff33" } },
+      { id:"roads-minor", type:"line", source:SRC, "source-layer":"roads",
+        filter:["in",["get","kind"],["literal",["minor_road","other","path"]]],
+        paint:{ "line-color":"#2a2f36", "line-width":["interpolate",["linear"],["zoom"],10,0.4,16,1.6] } },
+      { id:"roads-major", type:"line", source:SRC, "source-layer":"roads",
+        filter:["in",["get","kind"],["literal",["highway","major_road"]]],
+        paint:{ "line-color":"#3a4756", "line-width":["interpolate",["linear"],["zoom"],8,0.6,16,3.2] } },
+      { id:"roads-highway", type:"line", source:SRC, "source-layer":"roads",
+        filter:["==",["get","kind"],"highway"],
+        paint:{ "line-color":"#2F8CFF", "line-opacity":0.55, "line-width":["interpolate",["linear"],["zoom"],8,0.8,16,4] } },
+      { id:"buildings-3d", type:"fill-extrusion", source:SRC, "source-layer":"buildings",
+        minzoom:13,
+        paint:{
+          "fill-extrusion-color":[
+            "interpolate",["linear"],["coalesce",["get","height"],6],
+            0,"#262b31", 15,"#333a42", 40,"#3f4a56", 90,"#4f5e6e"
+          ],
+          "fill-extrusion-height":["coalesce",["get","height"],6],
+          "fill-extrusion-base":0,
+          "fill-extrusion-opacity":0.92
+        }
+      },
+      { id:"boundaries", type:"line", source:SRC, "source-layer":"boundaries",
+        paint:{ "line-color":"#5b6470", "line-width":1, "line-dasharray":[2,2] } },
+      { id:"places-label", type:"symbol", source:SRC, "source-layer":"places",
+        layout:{
+          "text-field":["coalesce",["get","name:es"],["get","name"]],
+          "text-font":["Noto Sans Regular"],
+          "text-size":["interpolate",["linear"],["zoom"],6,11,14,16]
+        },
+        paint:{ "text-color":"#e8ecf1", "text-halo-color":"#000000", "text-halo-width":1.4 }
+      }
+    ]
+  };
+}
+
+const loadingEl = document.getElementById("mapLoading");
+const loadingText = document.getElementById("loadingText");
+const mapEl = document.getElementById("map");
+
+let map;
+pmt.getHeader().then(h => {
+  const center = [h.centerLon, h.centerLat];
+  const zoom = Math.max(h.minZoom, Math.min(h.maxZoom, 13.5));
+
+  map = new maplibregl.Map({
+    container: "map",
+    style: buildStyle(),
+    center: center,
+    zoom: zoom,
+    pitch: 55,
+    bearing: -12,
+    maxPitch: 75,
+    attributionControl: { compact: true }
+  });
+
+  map.on("load", () => {
+    loadingText.textContent = "Mapa listo";
+    mapEl.classList.add("ready");
+    setTimeout(()=> loadingEl.classList.add("hide"), 450);
+  });
+
+  map.on("error", (e) => {
+    console.error(e);
+    showFatalError("No se pudo renderizar una capa del mapa. Revisa la consola.");
+  });
+
+  map.addControl(new maplibregl.NavigationControl({ visualizePitch:true }), "bottom-right");
+
+  // ---- Controles flotantes personalizados ----
+  const btn3d = document.getElementById("btn3d");
+  let is3d = true;
+  btn3d.addEventListener("click", () => {
+    is3d = !is3d;
+    btn3d.classList.toggle("active", is3d);
+    map.easeTo({ pitch: is3d ? 55 : 0, duration: 500 });
+  });
+
+  document.getElementById("btnCompass").addEventListener("click", () => {
+    map.easeTo({ bearing: 0, duration: 500 });
+  });
+
+  document.getElementById("btnLocate").addEventListener("click", () => {
+    map.easeTo({ center: center, zoom: 14.5, pitch:55, bearing:-12, duration:800 });
+  });
+
+  document.getElementById("btnRefresh").addEventListener("click", () => {
+    const dot = document.getElementById("statusDot");
+    const txt = document.getElementById("statusText");
+    dot.classList.remove("idle");
+    txt.innerHTML = "Buscando dispositivos…";
+    setTimeout(simulateScanResult, 1600);
+  });
+
+}).catch(err => {
+  console.error(err);
+  showFatalError("No se pudo leer el archivo .pmtiles en la ruta configurada (PMTILES_URL).");
+});
+
+function showFatalError(msg){
+  loadingText.innerHTML = "";
+  const e = document.createElement("div");
+  e.className = "err";
+  e.textContent = msg;
+  loadingEl.appendChild(e);
+  const hint = document.createElement("div");
+  hint.className = "hint";
+  hint.textContent = "Verifica que el archivo .pmtiles esté junto al HTML o cambia PMTILES_URL en el script.";
+  loadingEl.appendChild(hint);
+}
+
+// ===== Simulación ligera de "escaneo P2P" para visualizar el apartado =====
+let simCount = 0;
+function simulateScanResult(){
+  simCount = Math.min(simCount + (1 + Math.floor(Math.random()*2)), 6);
+  const dot = document.getElementById("statusDot");
+  const txt = document.getElementById("statusText");
+  document.getElementById("deviceCount").textContent = simCount;
+  dot.classList.add("idle");
+  txt.innerHTML = "<b id='deviceCount2'>" + simCount + "</b> dispositivos cerca";
+  if (simCount > 0){
+    document.getElementById("foundSheet").classList.add("show");
+    setTimeout(()=>document.getElementById("foundSheet").classList.remove("show"), 4200);
+  }
+}
+setTimeout(simulateScanResult, 2600);
+</script>
+</body>
+</html>
