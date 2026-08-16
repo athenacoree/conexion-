@@ -899,8 +899,13 @@ class MainActivity : ComponentActivity() {
             Manifest.permission.READ_CONTACTS
         )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            permissions.add(Manifest.permission.READ_MEDIA_AUDIO)
+            permissions.add(Manifest.permission.READ_MEDIA_VIDEO)
+            permissions.add(Manifest.permission.READ_MEDIA_IMAGES)
             permissions.add(Manifest.permission.NEARBY_WIFI_DEVICES)
             permissions.add(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            permissions.add(Manifest.permission.READ_EXTERNAL_STORAGE)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             permissions.add(Manifest.permission.BLUETOOTH_SCAN)
@@ -1208,25 +1213,10 @@ class MainActivity : ComponentActivity() {
                             selectFileLauncher.launch("*/*")
                         }
                     )
-                    3 -> TransmissionTabScreen(
+                    3 -> MediaTabScreen(
                         isDark = isDarkMode.value,
-                        isScreenShareEnabled = isScreenShareEnabled.value,
-                        isReceivingScreenStream = isReceivingScreenStream.value,
-                        liveScreenFrameBitmap = liveScreenFrameBitmap.value,
-                        isAirShareServerActive = isAirShareServerActive.value,
-                        airShareLocalIp = airShareLocalIp.value,
-                        qrBitmap = if (isAirShareServerActive.value) generateQrCodeBitmap("http://${airShareLocalIp.value}:8989") else null,
-                        onToggleScreenShare = { isScreenShareEnabled.value = it },
-                        onStartScreenStreaming = {
-                            sessionManager.sendStreamRequest("SCREEN", myNameState.value)
-                            Toast.makeText(this@MainActivity, "Solicitando inicio de compartir pantalla...", Toast.LENGTH_SHORT).show()
-                        },
-                        onStartAudioStreaming = {
-                            sessionManager.sendStreamRequest("AUDIO", myNameState.value)
-                            Toast.makeText(this@MainActivity, "Solicitando inicio de transmisión de audio...", Toast.LENGTH_SHORT).show()
-                        },
-                        onToggleAirShareServer = {
-                            toggleAirShareServer()
+                        onSelectFileToPlay = {
+                            selectFileLauncher.launch("*/*")
                         }
                     )
                     4 -> SettingsTabScreen(
