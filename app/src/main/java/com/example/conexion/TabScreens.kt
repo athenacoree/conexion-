@@ -903,21 +903,37 @@ fun ChatsTabScreen(
     var inputText by remember { mutableStateOf("") }
     val keyboardController = LocalSoftwareKeyboardController.current
 
+    var searchQuery by remember { mutableStateOf("") }
+    var activeFilter by remember { mutableStateOf("all") } // "all", "unread", "pinned"
+    var pinnedPeers by remember { mutableStateOf(setOf<String>()) }
+    var unreadPeers by remember { mutableStateOf(setOf<String>()) }
+
     var replyingToMessage by remember { mutableStateOf<String?>(null) }
     var actionDialogMessage by remember { mutableStateOf<DbChatMessage?>(null) }
+    var selectedPeerForContext by remember { mutableStateOf<Pair<String, String>?>(null) }
+
+    val bluePrimary = Color(0xFF0B6CFF)
+    val blueSecondary = Color(0xFF2F8CFF)
+    val systemGray = Color(0xFF8E8E93)
+    val darkBg = Color(0xFF000000)
+    val darkCard = Color(0xFF1C1C1E)
+    val lightBg = Color(0xFFFFFFFF)
+    val lightCard = Color(0xFFF2F2F7)
+    val dividerColor = if (isDark) Color(0x6C545458) else Color(0x4A3C3C43)
+    val greenPresence = Color(0xFF34C759)
 
     if (activeChatPeerDeviceId.isNotEmpty()) {
         // Individual iMessage-Style Chat Screen based on imessage-chat-2.html
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .background(if (isDark) Color(0xFF0B0F17) else Color(0xFFFFFFFF))
+                .background(if (isDark) darkBg else lightBg)
         ) {
             // iMessage Glass Header Bar
             Surface(
                 modifier = Modifier.fillMaxWidth(),
-                color = if (isDark) Color(0xFF161F2E).copy(alpha = 0.95f) else Color(0xFFFFFFFF).copy(alpha = 0.95f),
-                shadowElevation = 2.dp
+                color = if (isDark) Color(0xF80A0A0C).copy(alpha = 0.85f) else Color(0xF8F8F8F8).copy(alpha = 0.85f),
+                shadowElevation = 1.dp
             ) {
                 Row(
                     modifier = Modifier
@@ -930,47 +946,75 @@ fun ChatsTabScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.weight(1f)
                     ) {
-                        IconButton(onClick = onCloseChat) {
-                            Text("‹", fontSize = 32.sp, fontWeight = FontWeight.Bold, color = Color(0xFF0B6CFF))
+                        IconButton(
+                            onClick = onCloseChat,
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Text("‹", fontSize = 32.sp, fontWeight = FontWeight.Normal, color = bluePrimary)
                         }
+                        Spacer(modifier = Modifier.width(2.dp))
+                        val peerPeerInfo = peers.find { it.sessionToken == activeChatPeerDeviceId || it.device.deviceAddress == activeChatPeerDeviceId }
+                        val avatarIdx = peerPeerInfo?.avatarIndex ?: 0
                         AvatarBubble(
-                            avatarIndex = 0,
-                            size = 38.dp,
+                            avatarIndex = avatarIdx,
+                            size = 34.dp,
                             showGlowRing = false,
-                            isFloating = false
+                            isFloating = false,
+                            showAccessoryBadge = false
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = activeChatPeerName,
-                                fontWeight = FontWeight.Bold,
+                                fontWeight = FontWeight.SemiBold,
                                 fontSize = 15.sp,
-                                color = if (isDark) Color.White else Color(0xFF111114),
+                                color = if (isDark) Color.White else Color(0xFF1C1C1E),
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
                             Text(
                                 text = "iMessage P2P • En línea",
                                 fontSize = 11.sp,
-                                color = Color(0xFF8E8E93)
+                                color = systemGray
                             )
                         }
                     }
 
-                    // Action Buttons: Call, Screen Share, Audio Share
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(onClick = {
-                            Toast.makeText(context, "Iniciando llamada P2P con $activeChatPeerName...", Toast.LENGTH_SHORT).show()
-                        }) {
-                            Text("📞", fontSize = 18.sp)
+                    // Action Buttons (call, screen share, clipboard)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        IconButton(
+                            onClick = {
+                                Toast.makeText(context, "Llamando a $activeChatPeerName...", Toast.LENGTH_SHORT).show()
+                            },
+                            modifier = Modifier
+                                .size(32.dp)
+                                .clip(CircleShape)
+                                .background(bluePrimary.copy(alpha = 0.12f))
+                        ) {
+                            Text("📞", fontSize = 14.sp)
                         }
-                        IconButton(onClick = {
-                            Toast.makeText(context, "Compartiendo pantalla vía iMessage P2P...", Toast.LENGTH_SHORT).show()
-                        }) {
-                            Text("🖥️", fontSize = 18.sp)
+                        IconButton(
+                            onClick = {
+                                Toast.makeText(context, "Compartiendo pantalla vía P2P...", Toast.LENGTH_SHORT).show()
+                            },
+                            modifier = Modifier
+                                .size(32.dp)
+                                .clip(CircleShape)
+                                .background(bluePrimary.copy(alpha = 0.12f))
+                        ) {
+                            Text("🖥️", fontSize = 14.sp)
                         }
-                        IconButton(onClick = onSendClipboard) {
-                            Text("📋", fontSize = 18.sp)
+                        IconButton(
+                            onClick = onSendClipboard,
+                            modifier = Modifier
+                                .size(32.dp)
+                                .clip(CircleShape)
+                                .background(bluePrimary.copy(alpha = 0.12f))
+                        ) {
+                            Text("📋", fontSize = 14.sp)
                         }
                     }
                 }
@@ -980,68 +1024,64 @@ fun ChatsTabScreen(
             Box(modifier = Modifier.weight(1f)) {
                 if (chatMessages.isEmpty()) {
                     Box(
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 40.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text("💬", fontSize = 42.sp)
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                "No hay mensajes aún",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 15.sp,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                "Envía un mensaje cifrado iMessage P2P.",
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                        Text(
+                            text = "Aquí aparecerán los mensajes de esta conversación",
+                            fontSize = 14.sp,
+                            color = systemGray,
+                            textAlign = TextAlign.Center
+                        )
                     }
                 } else {
                     LazyColumn(
                         modifier = Modifier
                             .fillMaxSize()
-                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
                         reverseLayout = true
                     ) {
                         items(chatMessages.reversed()) { msg ->
                             val isMe = msg.isMe
-                            var offsetX by remember { mutableStateOf(0f) }
 
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(vertical = 3.dp),
+                                    .padding(vertical = 2.dp),
                                 horizontalArrangement = if (isMe) Arrangement.End else Arrangement.Start
                             ) {
                                 if (!isMe) {
+                                    val peerPeerInfo = peers.find { it.sessionToken == activeChatPeerDeviceId || it.device.deviceAddress == activeChatPeerDeviceId }
+                                    val avatarIdx = peerPeerInfo?.avatarIndex ?: 0
                                     AvatarBubble(
-                                        avatarIndex = 0,
-                                        size = 28.dp,
+                                        avatarIndex = avatarIdx,
+                                        size = 26.dp,
                                         showGlowRing = false,
-                                        isFloating = false
+                                        isFloating = false,
+                                        showAccessoryBadge = false
                                     )
-                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Spacer(modifier = Modifier.width(7.dp))
                                 }
 
-                                Column(horizontalAlignment = if (isMe) Alignment.End else Alignment.Start) {
+                                Column(
+                                    horizontalAlignment = if (isMe) Alignment.End else Alignment.Start,
+                                    modifier = Modifier.widthIn(max = 270.dp)
+                                ) {
                                     Box(
                                         modifier = Modifier
-                                            .widthIn(max = 280.dp)
-                                            .offset(x = offsetX.dp)
                                             .clip(
                                                 RoundedCornerShape(
-                                                    topStart = 18.dp,
-                                                    topEnd = 18.dp,
-                                                    bottomStart = if (isMe) 18.dp else 4.dp,
-                                                    bottomEnd = if (isMe) 4.dp else 18.dp
+                                                    topStart = 19.dp,
+                                                    topEnd = 19.dp,
+                                                    bottomStart = if (isMe) 19.dp else 5.dp,
+                                                    bottomEnd = if (isMe) 5.dp else 19.dp
                                                 )
                                             )
                                             .let {
                                                 if (isMe) {
-                                                    it.background(Brush.verticalGradient(listOf(Color(0xFF2F8CFF), Color(0xFF0B6CFF))))
+                                                    it.background(Brush.verticalGradient(listOf(blueSecondary, bluePrimary)))
                                                 } else {
                                                     it.background(if (isDark) Color(0xFF2C2C2E) else Color(0xFFE9E9EB))
                                                 }
@@ -1049,11 +1089,11 @@ fun ChatsTabScreen(
                                             .clickable {
                                                 actionDialogMessage = msg
                                             }
-                                            .padding(horizontal = 14.dp, vertical = 9.dp)
+                                            .padding(horizontal = 14.dp, vertical = 8.dp)
                                     ) {
                                         Text(
                                             text = msg.message,
-                                            fontSize = 15.sp,
+                                            fontSize = 16.5.sp,
                                             color = if (isMe) Color.White else if (isDark) Color.White else Color(0xFF111114)
                                         )
                                     }
@@ -1062,8 +1102,8 @@ fun ChatsTabScreen(
                                     val timeStr = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(msg.timestamp))
                                     Text(
                                         text = timeStr,
-                                        fontSize = 10.sp,
-                                        color = Color(0xFF8E8E93),
+                                        fontSize = 10.5.sp,
+                                        color = systemGray,
                                         modifier = Modifier.padding(horizontal = 4.dp)
                                     )
                                 }
@@ -1078,53 +1118,65 @@ fun ChatsTabScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(if (isDark) Color(0xFF1E293B) else Color(0xFFF1F5F9))
+                        .background(if (isDark) Color(0xFF1C1C1E) else Color(0xFFF1F5F9))
                         .padding(horizontal = 14.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text("Respondiendo a:", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF0B6CFF))
-                        Text(replyText, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text("Respondiendo a:", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = bluePrimary)
+                        Text(replyText, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, color = if (isDark) Color.White else Color.Black)
                     }
-                    IconButton(onClick = { replyingToMessage = null }) {
-                        Text("✕", fontSize = 14.sp)
+                    IconButton(
+                        onClick = { replyingToMessage = null },
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Text("✕", fontSize = 12.sp, color = systemGray)
                     }
                 }
             }
 
-            // iMessage Bottom Input Capsule
+            // iMessage Bottom Input Bar
             Surface(
                 modifier = Modifier.fillMaxWidth(),
-                color = if (isDark) Color(0xFF161F2E) else Color(0xFFFFFFFF),
+                color = if (isDark) Color(0xF80D0D0F).copy(alpha = 0.92f) else Color(0xF8F8F8F8).copy(alpha = 0.92f),
                 shadowElevation = 8.dp
             ) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 10.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                        .padding(horizontal = 8.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.Bottom
                 ) {
-                    IconButton(onClick = {
-                        Toast.makeText(context, "Adjuntar multimedia...", Toast.LENGTH_SHORT).show()
-                    }) {
-                        Text("⊕", fontSize = 24.sp, color = Color(0xFF8E8E93))
+                    IconButton(
+                        onClick = {
+                            Toast.makeText(context, "Adjuntar multimedia...", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier
+                            .padding(bottom = 2.dp)
+                            .size(32.dp)
+                            .border(1.5.dp, Color(0xFFC7C7CC), CircleShape)
+                    ) {
+                        Text("+", fontSize = 18.sp, fontWeight = FontWeight.Normal, color = systemGray)
                     }
+
+                    Spacer(modifier = Modifier.width(8.dp))
 
                     TextField(
                         value = inputText,
                         onValueChange = { inputText = it },
                         modifier = Modifier
                             .weight(1f)
-                            .clip(RoundedCornerShape(20.dp)),
-                        placeholder = { Text("iMessage", fontSize = 15.sp, color = Color(0xFF8E8E93)) },
+                            .clip(RoundedCornerShape(18.dp))
+                            .border(1.dp, if (isDark) Color(0xFF38383A) else Color(0xFFD5D5DA), RoundedCornerShape(18.dp)),
+                        placeholder = { Text("Mensaje", fontSize = 16.5.sp, color = Color(0xFFA9A9AE)) },
                         colors = TextFieldDefaults.colors(
-                            focusedContainerColor = if (isDark) Color(0xFF2C2C2E) else Color(0xFFF1F5F9),
-                            unfocusedContainerColor = if (isDark) Color(0xFF2C2C2E) else Color(0xFFF1F5F9),
+                            focusedContainerColor = if (isDark) Color(0xFF1C1C1E) else Color.White,
+                            unfocusedContainerColor = if (isDark) Color(0xFF1C1C1E) else Color.White,
                             focusedIndicatorColor = Color.Transparent,
                             unfocusedIndicatorColor = Color.Transparent
                         ),
-                        singleLine = true,
+                        maxLines = 4,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                         keyboardActions = KeyboardActions(onSend = {
                             if (inputText.isNotBlank()) {
@@ -1136,7 +1188,7 @@ fun ChatsTabScreen(
                         })
                     )
 
-                    Spacer(modifier = Modifier.width(6.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
 
                     IconButton(
                         onClick = {
@@ -1148,9 +1200,10 @@ fun ChatsTabScreen(
                             }
                         },
                         modifier = Modifier
-                            .size(36.dp)
+                            .padding(bottom = 2.dp)
+                            .size(32.dp)
                             .clip(CircleShape)
-                            .background(if (inputText.isNotBlank()) Color(0xFF0B6CFF) else Color(0xFF8E8E93))
+                            .background(if (inputText.isNotBlank()) bluePrimary else Color(0xFFC7C7CC))
                     ) {
                         Text("↑", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.White)
                     }
@@ -1158,11 +1211,11 @@ fun ChatsTabScreen(
             }
         }
 
-        // Long Press Contextual Action Dialog based on imessage-chat-2.html
+        // Action Dialog for Message
         actionDialogMessage?.let { selectedMsg ->
             AlertDialog(
                 onDismissRequest = { actionDialogMessage = null },
-                title = { Text("Opciones de iMessage", fontWeight = FontWeight.Bold) },
+                title = { Text("Opciones de Mensaje", fontWeight = FontWeight.Bold) },
                 text = {
                     Column(modifier = Modifier.fillMaxWidth()) {
                         Text("\"${selectedMsg.message}\"", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1196,94 +1249,393 @@ fun ChatsTabScreen(
             )
         }
     } else {
-        // Conversations List Screen
+        // Conversation List View matching chats-list.html
+        data class ChatDisplayItem(
+            val id: String,
+            val name: String,
+            val avatarIndex: Int,
+            val lastMsg: String,
+            val time: String,
+            val isOnline: Boolean,
+            val isPinned: Boolean,
+            val unreadCount: Int,
+            val peerInfo: PeerInfo?,
+            val blePeer: BackgroundDiscoveryService.BlePeer?
+        )
+
+        // Build combined list of items
+        val allItems = remember(peers, blePeers, searchQuery, activeFilter, pinnedPeers, unreadPeers) {
+            val list = mutableListOf<ChatDisplayItem>()
+
+            peers.forEach { peer ->
+                val id = peer.sessionToken.ifEmpty { peer.device.deviceAddress }
+                val isPinned = pinnedPeers.contains(id)
+                val unread = if (unreadPeers.contains(id)) 1 else 0
+                val item = ChatDisplayItem(
+                    id = id,
+                    name = peer.userName,
+                    avatarIndex = peer.avatarIndex,
+                    lastMsg = "Toca para abrir chat P2P cifrado",
+                    time = peer.formattedDistance,
+                    isOnline = true,
+                    isPinned = isPinned,
+                    unreadCount = unread,
+                    peerInfo = peer,
+                    blePeer = null
+                )
+                list.add(item)
+            }
+
+            blePeers.filter { bp -> peers.none { it.sessionToken == bp.sessionToken } }.forEach { bpeer ->
+                val id = bpeer.sessionToken
+                val isPinned = pinnedPeers.contains(id)
+                val unread = if (unreadPeers.contains(id)) 1 else 0
+                val item = ChatDisplayItem(
+                    id = id,
+                    name = bpeer.userName,
+                    avatarIndex = bpeer.avatarIndex,
+                    lastMsg = "BLE Beacon cerca",
+                    time = bpeer.formattedDistance,
+                    isOnline = false,
+                    isPinned = isPinned,
+                    unreadCount = unread,
+                    peerInfo = null,
+                    blePeer = bpeer
+                )
+                list.add(item)
+            }
+
+            // Filter by search & segment
+            list.filter { c ->
+                val matchesSearch = searchQuery.isBlank() || c.name.lowercase().contains(searchQuery.trim().lowercase())
+                val matchesFilter = when (activeFilter) {
+                    "unread" -> c.unreadCount > 0
+                    "pinned" -> c.isPinned
+                    else -> true
+                }
+                matchesSearch && matchesFilter
+            }.sortedWith(
+                compareByDescending<ChatDisplayItem> { it.isPinned }
+                    .thenBy { it.name }
+            )
+        }
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(16.dp)
+                .background(if (isDark) darkBg else lightBg)
         ) {
-            // Stories Row on Top
-            PeerStoriesCarousel(
-                myAvatarIndex = myAvatarIndex,
-                myName = myName,
-                peers = peers,
-                blePeers = blePeers,
-                onPeerClick = onPeerSelected,
-                onBlePeerClick = onBlePeerSelected
-            )
+            // Large Title Header (chats-list.html)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(if (isDark) Color(0xEC0A0A0C) else Color(0xECF8F8F8))
+                    .padding(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 4.dp)
+            ) {
+                // Top row with title "Chats", Editar button, Compose button
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Chats",
+                        fontSize = 33.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = if (isDark) Color.White else Color.Black,
+                        letterSpacing = (-0.4).sp
+                    )
 
-            Spacer(modifier = Modifier.height(14.dp))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        TextButton(
+                            onClick = {
+                                Toast.makeText(context, "Modo edición", Toast.LENGTH_SHORT).show()
+                            },
+                            contentPadding = PaddingValues(horizontal = 4.dp)
+                        ) {
+                            Text("Editar", fontSize = 16.sp, color = bluePrimary)
+                        }
 
-            Text(
-                text = "CHATS Y CONVERSACIONES",
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Black,
-                color = MaterialTheme.colorScheme.primary,
-                letterSpacing = 1.sp
-            )
+                        IconButton(
+                            onClick = {
+                                if (peers.isNotEmpty()) {
+                                    val first = peers.first()
+                                    onSelectPeerToChat(first.sessionToken.ifEmpty { first.device.deviceAddress }, first.userName)
+                                } else {
+                                    Toast.makeText(context, "No hay contactos activos cerca", Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            modifier = Modifier
+                                .size(34.dp)
+                                .clip(CircleShape)
+                                .background(bluePrimary.copy(alpha = 0.14f))
+                        ) {
+                            Text("✏️", fontSize = 15.sp)
+                        }
+                    }
+                }
 
-            Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(10.dp))
 
-            if (peers.isEmpty() && blePeers.isEmpty()) {
+                // Search Capsule Pill
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(36.dp)
+                        .clip(RoundedCornerShape(11.dp))
+                        .background(if (isDark) Color(0x3D767680) else Color(0x1F767680))
+                        .padding(horizontal = 10.dp),
+                    contentAlignment = Alignment.CenterStart
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("🔍", fontSize = 13.sp, color = systemGray)
+                        Spacer(modifier = Modifier.width(6.dp))
+                        TextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            placeholder = { Text("Buscar", fontSize = 16.sp, color = systemGray) },
+                            singleLine = true,
+                            colors = TextFieldDefaults.colors(
+                                focusedContainerColor = Color.Transparent,
+                                unfocusedContainerColor = Color.Transparent,
+                                focusedIndicatorColor = Color.Transparent,
+                                unfocusedIndicatorColor = Color.Transparent
+                            ),
+                            modifier = Modifier.weight(1f)
+                        )
+                        if (searchQuery.isNotEmpty()) {
+                            IconButton(
+                                onClick = { searchQuery = "" },
+                                modifier = Modifier.size(20.dp)
+                            ) {
+                                Text("✕", fontSize = 11.sp, color = systemGray)
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Segmented Filter Bar ("Todos", "No leídos", "Fijados")
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    listOf("all" to "Todos", "unread" to "No leídos", "pinned" to "Fijados").forEach { (filterKey, filterLabel) ->
+                        val isSelected = activeFilter == filterKey
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(9.dp))
+                                .background(
+                                    if (isSelected) {
+                                        if (isDark) Color(0x57767680) else Color(0x3D767680)
+                                    } else {
+                                        if (isDark) Color(0x29767680) else Color(0x1F767680)
+                                    }
+                                )
+                                .clickable { activeFilter = filterKey }
+                                .padding(vertical = 6.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = filterLabel,
+                                fontSize = 13.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (isSelected) (if (isDark) Color.White else Color.Black) else systemGray
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+
+            // Stories Carousel at the top of list
+            Column(modifier = Modifier.fillMaxWidth()) {
+                PeerStoriesCarousel(
+                    myAvatarIndex = myAvatarIndex,
+                    myName = myName,
+                    peers = peers,
+                    blePeers = blePeers,
+                    onPeerClick = onPeerSelected,
+                    onBlePeerClick = onBlePeerSelected
+                )
+            }
+
+            if (allItems.isEmpty()) {
+                // Empty State matching chats-list.html
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f),
                     contentAlignment = Alignment.Center
                 ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("💬", fontSize = 48.sp)
-                        Spacer(modifier = Modifier.height(12.dp))
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(horizontal = 40.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(64.dp)
+                                .clip(RoundedCornerShape(20.dp))
+                                .background(if (isDark) Color(0x2E767680) else Color(0x1F767680)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("💬", fontSize = 30.sp)
+                        }
+                        Spacer(modifier = Modifier.height(18.dp))
                         Text(
-                            "Sin contactos activos",
+                            text = if (peers.isEmpty() && blePeers.isEmpty()) "Sin contactos activos" else "Sin resultados",
+                            fontSize = 18.sp,
                             fontWeight = FontWeight.Bold,
-                            fontSize = 16.sp,
-                            color = MaterialTheme.colorScheme.onSurface
+                            color = if (isDark) Color.White else Color.Black
                         )
-                        Spacer(modifier = Modifier.height(4.dp))
+                        Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            "Escanea dispositivos en la pestaña Escáner para iniciar un chat directo P2P.",
-                            fontSize = 13.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.padding(horizontal = 32.dp)
+                            text = if (peers.isEmpty() && blePeers.isEmpty())
+                                "Escanea dispositivos en la pestaña Escáner para iniciar un chat directo P2P."
+                            else
+                                "No se encontraron conversaciones que coincidan con la búsqueda o filtro.",
+                            fontSize = 14.5.sp,
+                            color = systemGray,
+                            textAlign = TextAlign.Center
                         )
                     }
                 }
             } else {
+                // List section label
+                Text(
+                    text = "CERCA DE TI",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = systemGray,
+                    letterSpacing = 0.4.sp,
+                    modifier = Modifier.padding(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 4.dp)
+                )
+
                 LazyColumn(modifier = Modifier.weight(1f)) {
-                    items(peers) { peer ->
-                        GlassCard(
+                    items(allItems) { c ->
+                        Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = 4.dp),
-                            isDark = isDark,
-                            onClick = { onSelectPeerToChat(peer.sessionToken.ifEmpty { peer.device.deviceAddress }, peer.userName) }
+                                .clickable {
+                                    if (c.peerInfo != null) {
+                                        onSelectPeerToChat(c.id, c.name)
+                                    } else if (c.blePeer != null) {
+                                        onBlePeerSelected(c.blePeer)
+                                    }
+                                }
+                                .padding(horizontal = 16.dp, vertical = 9.dp)
                         ) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    AvatarBubble(avatarIndex = peer.avatarIndex, size = 48.dp)
-                                    Spacer(modifier = Modifier.width(12.dp))
-                                    Column {
+                                // Avatar with Presence Dot
+                                Box(modifier = Modifier.size(54.dp)) {
+                                    AvatarBubble(
+                                        avatarIndex = c.avatarIndex,
+                                        size = 54.dp,
+                                        showGlowRing = false,
+                                        isFloating = false,
+                                        showAccessoryBadge = false
+                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .size(14.dp)
+                                            .align(Alignment.BottomEnd)
+                                            .clip(CircleShape)
+                                            .background(if (c.isOnline) greenPresence else Color(0xFF636366))
+                                            .border(2.5.dp, if (isDark) darkBg else lightBg, CircleShape)
+                                    )
+                                }
+
+                                Spacer(modifier = Modifier.width(12.dp))
+
+                                Column(
+                                    modifier = Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            if (c.isPinned) {
+                                                Text("📌", fontSize = 12.sp)
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                            }
+                                            Text(
+                                                text = c.name,
+                                                fontSize = 17.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = if (isDark) Color.White else Color.Black,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+
                                         Text(
-                                            text = peer.userName,
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 15.sp,
-                                            color = MaterialTheme.colorScheme.onSurface
-                                        )
-                                        Text(
-                                            text = "Toca para abrir chat P2P cifrado",
-                                            fontSize = 12.sp,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            text = c.time,
+                                            fontSize = 13.5.sp,
+                                            color = if (c.unreadCount > 0) bluePrimary else systemGray,
+                                            fontWeight = if (c.unreadCount > 0) FontWeight.SemiBold else FontWeight.Normal
                                         )
                                     }
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = c.lastMsg,
+                                            fontSize = 14.5.sp,
+                                            color = if (c.unreadCount > 0) (if (isDark) Color(0xFFC9C9CC) else Color(0xFF111114)) else systemGray,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f)
+                                        )
+
+                                        if (c.unreadCount > 0) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .height(20.dp)
+                                                    .widthIn(min = 20.dp)
+                                                    .clip(CircleShape)
+                                                    .background(bluePrimary)
+                                                    .padding(horizontal = 6.dp),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Text(
+                                                    text = if (c.unreadCount > 99) "99+" else c.unreadCount.toString(),
+                                                    color = Color.White,
+                                                    fontSize = 12.sp,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            }
+                                        }
+                                    }
                                 }
-                                Text("💬", fontSize = 20.sp)
                             }
+
+                            Spacer(modifier = Modifier.height(9.dp))
+                            Divider(
+                                color = dividerColor,
+                                thickness = 0.5.dp,
+                                modifier = Modifier.padding(start = 66.dp)
+                            )
                         }
                     }
                 }
