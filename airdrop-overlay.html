@@ -1,0 +1,687 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>AirDrop</title>
+<style>
+  :root{
+    --blue-1:#2F8CFF;
+    --blue-2:#0B6CFF;
+    --green:#34C759;
+    --orange:#FF9F0A;
+    --red:#FF453A;
+    --purple:#BF5AF2;
+    --system-gray:#98989F;
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{height:100%;background:transparent;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display","Helvetica Neue",Arial,sans-serif;overflow:hidden;color:#fff;}
+
+  /* ============ SIMULACIÓN DE LA APP DETRÁS (solo para vista previa) ============ */
+  .backdrop-app{
+    position:fixed;inset:0;z-index:0;
+    background:linear-gradient(180deg,#111 0%,#000 100%);
+    filter:blur(0px);
+  }
+  .backdrop-app .fake-header{
+    padding:calc(var(--safe-top) + 14px) 20px 10px;
+    color:rgba(255,255,255,0.5);
+  }
+  .backdrop-app .fake-header .d1{font-size:13px;margin-bottom:2px;}
+  .backdrop-app .fake-header .d2{font-size:13px;color:rgba(255,255,255,0.35);}
+  .backdrop-app .fake-rows{padding:20px;display:flex;flex-direction:column;gap:14px;}
+  .backdrop-app .fake-row{height:52px;border-radius:14px;background:rgba(255,255,255,0.04);}
+
+  /* ============ SCRIM + BLUR (el overlay se dibuja encima de cualquier app) ============ */
+  .scrim{
+    position:fixed;inset:0;z-index:10;
+    background:rgba(6,8,14,0.55);
+    -webkit-backdrop-filter:blur(26px) saturate(140%);
+    backdrop-filter:blur(26px) saturate(140%);
+    opacity:0;
+    transition:opacity 0.35s ease;
+  }
+  .scrim.show{opacity:1;}
+
+  /* ============ HOJA FLOTANTE (bottom sheet arrastrable) ============ */
+  .sheet{
+    position:fixed;
+    left:0;right:0;bottom:0;
+    z-index:20;
+    max-height:88vh;
+    border-radius:28px 28px 0 0;
+    background:linear-gradient(165deg, rgba(28,30,38,0.92), rgba(14,15,20,0.96));
+    border:1px solid rgba(255,255,255,0.08);
+    border-bottom:none;
+    box-shadow:0 -20px 60px rgba(0,0,0,0.55);
+    transform:translateY(100%);
+    transition:transform 0.42s cubic-bezier(.22,1.05,.36,1);
+    display:flex;
+    flex-direction:column;
+    perspective:900px;
+  }
+  .sheet.open{transform:translateY(0%);}
+  .sheet.dragging{transition:none;}
+
+  .grabber-zone{
+    display:flex;justify-content:center;
+    padding:10px 0 4px;
+    touch-action:none;
+    flex-shrink:0;
+  }
+  .grabber{
+    width:38px;height:5px;border-radius:3px;
+    background:rgba(255,255,255,0.28);
+  }
+
+  .sheet-header{
+    padding:6px 24px 14px;
+    flex-shrink:0;
+  }
+  .sheet-title{
+    font-size:29px;font-weight:800;letter-spacing:-0.4px;
+    display:flex;align-items:center;gap:9px;
+  }
+  .sheet-title .bolt{
+    width:26px;height:26px;border-radius:8px;
+    background:linear-gradient(160deg,var(--blue-1),var(--purple));
+    display:flex;align-items:center;justify-content:center;
+    box-shadow:0 4px 14px rgba(47,140,255,0.5);
+  }
+  .sheet-title .bolt svg{width:14px;height:14px;fill:#fff;}
+  .sheet-sub{
+    font-size:14.5px;color:var(--system-gray);
+    margin-top:4px;line-height:1.35;
+  }
+
+  .sheet-body{
+    flex:1;
+    overflow-y:auto;
+    -webkit-overflow-scrolling:touch;
+    scrollbar-width:none;
+    padding-bottom:calc(26px + var(--safe-bottom));
+  }
+  .sheet-body::-webkit-scrollbar{display:none;}
+
+  /* ============ RADAR / MI DISPOSITIVO ============ */
+  .radar-zone{
+    position:relative;
+    height:230px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    margin-bottom:6px;
+  }
+  .radar-sweep{
+    position:absolute;
+    width:210px;height:210px;
+    border-radius:50%;
+    background:conic-gradient(from 0deg, rgba(47,140,255,0.0) 0deg, rgba(47,140,255,0.0) 300deg, rgba(47,140,255,0.35) 350deg, rgba(47,140,255,0.55) 360deg);
+    animation:radarSpin 3.4s linear infinite;
+    -webkit-mask:radial-gradient(circle, transparent 46%, black 47%);
+    mask:radial-gradient(circle, transparent 46%, black 47%);
+  }
+  @keyframes radarSpin{ to{ transform:rotate(360deg); } }
+
+  .radar-ring{
+    position:absolute;
+    border-radius:50%;
+    border:1px solid rgba(47,140,255,0.4);
+  }
+  .radar-ring.r1{width:100px;height:100px;}
+  .radar-ring.r2{width:150px;height:150px;border-color:rgba(47,140,255,0.28);}
+  .radar-ring.r3{width:200px;height:200px;border-color:rgba(47,140,255,0.16);}
+
+  .radar-pulse{
+    position:absolute;
+    width:100px;height:100px;
+    border-radius:50%;
+    border:1.5px solid rgba(47,140,255,0.6);
+    animation:radarPulse 2.6s infinite ease-out;
+  }
+  .radar-pulse.p2{animation-delay:0.9s;}
+  .radar-pulse.p3{animation-delay:1.8s;}
+  @keyframes radarPulse{
+    0%{transform:scale(1);opacity:0.85;}
+    100%{transform:scale(2.15);opacity:0;}
+  }
+
+  .me-node{
+    position:relative;
+    z-index:2;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:9px;
+    transform-style:preserve-3d;
+    animation:floatMe 3.4s ease-in-out infinite;
+  }
+  @keyframes floatMe{
+    0%,100%{ transform:translateY(0) rotateX(0deg); }
+    50%{ transform:translateY(-7px) rotateX(4deg); }
+  }
+  .me-avatar-wrap{
+    position:relative;
+    width:84px;height:84px;
+  }
+  .me-avatar{
+    width:84px;height:84px;
+    border-radius:50%;
+    background:linear-gradient(160deg,#3A7BD5,#1B3A6B);
+    border:2.5px solid rgba(255,255,255,0.25);
+    box-shadow:0 14px 30px rgba(47,140,255,0.4), inset 0 2px 6px rgba(255,255,255,0.15);
+    display:flex;align-items:center;justify-content:center;
+    font-size:36px;
+  }
+  .status-badge{
+    position:absolute;
+    right:-2px;bottom:-2px;
+    width:28px;height:28px;
+    border-radius:50%;
+    background:linear-gradient(160deg,var(--blue-1),var(--blue-2));
+    border:3px solid #17181d;
+    display:flex;align-items:center;justify-content:center;
+    box-shadow:0 4px 10px rgba(0,0,0,0.4);
+  }
+  .status-badge svg{width:13px;height:13px;stroke:#fff;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;}
+
+  .me-name{font-size:17px;font-weight:700;}
+  .me-status{
+    font-size:13.5px;font-weight:600;color:var(--green);
+    display:flex;align-items:center;gap:6px;
+  }
+  .me-status .dots span{
+    display:inline-block;width:4px;height:4px;border-radius:50%;
+    background:var(--green);margin-left:2px;
+    animation:dotFade 1.4s infinite;
+  }
+  .me-status .dots span:nth-child(2){animation-delay:0.2s;}
+  .me-status .dots span:nth-child(3){animation-delay:0.4s;}
+  @keyframes dotFade{
+    0%,100%{opacity:0.25;}
+    50%{opacity:1;}
+  }
+
+  /* ============ SECCIÓN DISPOSITIVOS ============ */
+  .found-label{
+    font-size:13px;font-weight:700;color:var(--system-gray);
+    letter-spacing:0.3px;
+    padding:4px 24px 14px;
+    display:flex;align-items:center;justify-content:space-between;
+  }
+  .found-count{
+    background:rgba(255,255,255,0.08);
+    color:#fff;
+    font-size:11.5px;font-weight:700;
+    padding:2px 8px;border-radius:10px;
+  }
+
+  .device-grid{
+    display:grid;
+    grid-template-columns:repeat(3, 1fr);
+    gap:20px 8px;
+    padding:0 20px 8px;
+  }
+
+  .device-card{
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:8px;
+    perspective:600px;
+  }
+  .device-avatar-wrap{
+    position:relative;
+    width:72px;height:72px;
+    animation:floatDev 3.2s ease-in-out infinite;
+    animation-delay:var(--delay, 0s);
+    transform-style:preserve-3d;
+  }
+  @keyframes floatDev{
+    0%,100%{ transform:translateY(0) rotateY(0deg); }
+    50%{ transform:translateY(-5px) rotateY(-3deg); }
+  }
+  .device-avatar{
+    width:72px;height:72px;
+    border-radius:50%;
+    background:linear-gradient(160deg,#3A7BD5,#1B3A6B);
+    border:2.5px solid rgba(255,255,255,0.22);
+    display:flex;align-items:center;justify-content:center;
+    font-size:30px;
+    box-shadow:0 10px 22px rgba(0,0,0,0.4), inset 0 2px 5px rgba(255,255,255,0.14);
+    transition:transform 0.16s ease, box-shadow 0.16s ease, border-color 0.2s ease;
+    cursor:pointer;
+  }
+  .device-avatar.near{border-color:rgba(52,199,89,0.65);box-shadow:0 10px 22px rgba(52,199,89,0.25), inset 0 2px 5px rgba(255,255,255,0.14);}
+  .device-avatar.mid{border-color:rgba(255,159,10,0.65);box-shadow:0 10px 22px rgba(255,159,10,0.22), inset 0 2px 5px rgba(255,255,255,0.14);}
+  .device-avatar.far{border-color:rgba(255,69,58,0.6);box-shadow:0 10px 22px rgba(255,69,58,0.18), inset 0 2px 5px rgba(255,255,255,0.14);}
+
+  .device-card.pressed .device-avatar{
+    transform:scale(0.9) rotateX(8deg);
+  }
+  .device-card.selecting .device-avatar-wrap{animation:none;}
+  .device-card.selecting .device-avatar{
+    transform:scale(1.12);
+    box-shadow:0 0 0 4px rgba(47,140,255,0.35), 0 14px 30px rgba(47,140,255,0.5);
+  }
+
+  .device-bt-badge{
+    position:absolute;right:-3px;bottom:-3px;
+    width:22px;height:22px;border-radius:50%;
+    background:linear-gradient(160deg,#3A7BD5,#1B3A6B);
+    border:2.5px solid #17181d;
+    display:flex;align-items:center;justify-content:center;
+  }
+  .device-bt-badge svg{width:10px;height:10px;stroke:#fff;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;}
+
+  .device-name{
+    font-size:12.5px;font-weight:600;
+    max-width:76px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    text-align:center;
+  }
+  .device-distance{
+    font-size:11px;font-weight:700;
+    padding:2.5px 8px;border-radius:8px;
+    background:rgba(255,255,255,0.08);
+  }
+  .device-distance.near{color:var(--green);}
+  .device-distance.mid{color:var(--orange);}
+  .device-distance.far{color:var(--red);}
+
+  .device-progress{
+    font-size:10.5px;font-weight:700;color:var(--blue-1);
+  }
+
+  .empty-search{
+    display:flex;flex-direction:column;align-items:center;
+    padding:20px 40px 10px;text-align:center;
+    color:var(--system-gray);
+  }
+  .empty-search svg{width:34px;height:34px;stroke:var(--system-gray);fill:none;stroke-width:1.5;margin-bottom:10px;opacity:0.6;}
+  .empty-search p{font-size:13.5px;line-height:1.4;}
+
+  /* ============ MODAL DE CONFIRMACIÓN DE ENVÍO ============ */
+  .send-overlay{
+    position:fixed;inset:0;z-index:60;
+    display:flex;align-items:center;justify-content:center;
+    background:rgba(0,0,0,0);
+    opacity:0;pointer-events:none;
+    transition:background 0.3s ease;
+  }
+  .send-overlay.show{
+    opacity:1;pointer-events:auto;
+    background:rgba(0,0,0,0.5);
+    -webkit-backdrop-filter:blur(18px);
+    backdrop-filter:blur(18px);
+  }
+  .send-card{
+    width:250px;
+    border-radius:22px;
+    padding:26px 20px 22px;
+    background:rgba(30,32,40,0.85);
+    border:1px solid rgba(255,255,255,0.1);
+    box-shadow:0 24px 50px rgba(0,0,0,0.5);
+    text-align:center;
+    transform:scale(0.82) rotateX(8deg);
+    opacity:0;
+    transition:transform 0.32s cubic-bezier(.22,1.1,.36,1), opacity 0.25s ease;
+  }
+  .send-overlay.show .send-card{transform:scale(1) rotateX(0deg);opacity:1;}
+  .send-avatar{
+    width:70px;height:70px;border-radius:50%;
+    margin:0 auto 14px;
+    background:linear-gradient(160deg,#3A7BD5,#1B3A6B);
+    display:flex;align-items:center;justify-content:center;
+    font-size:30px;
+    box-shadow:0 10px 24px rgba(47,140,255,0.4);
+  }
+  .send-title{font-size:16.5px;font-weight:700;margin-bottom:4px;}
+  .send-sub{font-size:13px;color:var(--system-gray);margin-bottom:18px;}
+  .send-ring-wrap{position:relative;width:56px;height:56px;margin:0 auto;}
+  .send-ring-wrap svg{width:56px;height:56px;transform:rotate(-90deg);}
+  .send-ring-wrap circle{fill:none;stroke-width:4;}
+  .send-ring-wrap .track{stroke:rgba(255,255,255,0.12);}
+  .send-ring-wrap .fill{stroke:var(--blue-1);stroke-linecap:round;transition:stroke-dashoffset 0.2s linear;}
+  .send-pct{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;}
+  .send-cancel{
+    margin-top:16px;
+    width:100%;
+    padding:10px 0;
+    border-radius:12px;
+    background:rgba(255,255,255,0.08);
+    color:#fff;
+    border:none;
+    font-size:14.5px;font-weight:600;
+  }
+  .send-cancel:active{background:rgba(255,255,255,0.15);}
+
+  .toast{
+    position:fixed;bottom:40px;left:50%;
+    transform:translateX(-50%) translateY(10px);
+    background:rgba(40,40,42,0.92);
+    -webkit-backdrop-filter:blur(14px);
+    backdrop-filter:blur(14px);
+    color:#fff;padding:10px 18px;border-radius:14px;
+    font-size:14px;font-weight:500;z-index:1000;
+    opacity:0;transition:opacity 0.25s ease, transform 0.25s ease;
+    pointer-events:none;display:flex;align-items:center;gap:7px;
+  }
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+  .toast svg{width:16px;height:16px;fill:var(--green);}
+</style>
+</head>
+<body>
+
+<!-- Vista previa de una app cualquiera detrás del overlay (solo demostrativo) -->
+<div class="backdrop-app">
+  <div class="fake-header">
+    <div class="d1">15 Agosto 2026</div>
+    <div class="d2">19:09 · Conexion</div>
+  </div>
+  <div class="fake-rows">
+    <div class="fake-row"></div>
+    <div class="fake-row"></div>
+    <div class="fake-row"></div>
+  </div>
+</div>
+
+<div class="scrim" id="scrim"></div>
+
+<div class="sheet" id="sheet">
+  <div class="grabber-zone" id="grabberZone">
+    <div class="grabber"></div>
+  </div>
+
+  <div class="sheet-header">
+    <div class="sheet-title">
+      <span class="bolt"><svg viewBox="0 0 24 24"><path d="M13 2L4 14h6l-1 8 9-12h-6z"/></svg></span>
+      AirDrop
+    </div>
+    <div class="sheet-sub">Compartir con dispositivos cercanos</div>
+  </div>
+
+  <div class="sheet-body" id="sheetBody">
+
+    <div class="radar-zone">
+      <div class="radar-sweep"></div>
+      <div class="radar-ring r3"></div>
+      <div class="radar-ring r2"></div>
+      <div class="radar-ring r1"></div>
+      <div class="radar-pulse"></div>
+      <div class="radar-pulse p2"></div>
+      <div class="radar-pulse p3"></div>
+      <div class="me-node">
+        <div class="me-avatar-wrap">
+          <div class="me-avatar">🧑‍💻</div>
+          <div class="status-badge"><svg viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11M6.5 12h11"/></svg></div>
+        </div>
+        <div class="me-name">Mi Dispositivo</div>
+        <div class="me-status">Buscando<span class="dots"><span></span><span></span><span></span></span></div>
+      </div>
+    </div>
+
+    <div class="found-label">
+      <span>Dispositivos encontrados</span>
+      <span class="found-count" id="foundCount">0</span>
+    </div>
+
+    <div class="device-grid" id="deviceGrid"></div>
+
+    <div class="empty-search" id="emptySearch">
+      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+      <p>Buscando dispositivos cercanos con AirDrop y Sonar activados…</p>
+    </div>
+
+  </div>
+</div>
+
+<!-- Modal de confirmación al seleccionar un dispositivo -->
+<div class="send-overlay" id="sendOverlay">
+  <div class="send-card">
+    <div class="send-avatar" id="sendAvatar">📱</div>
+    <div class="send-title" id="sendTitle">Enviando a DIRECT-d…</div>
+    <div class="send-sub" id="sendSub">Preparando archivo…</div>
+    <div class="send-ring-wrap">
+      <svg viewBox="0 0 56 56">
+        <circle class="track" cx="28" cy="28" r="24"></circle>
+        <circle class="fill" id="sendRingFill" cx="28" cy="28" r="24" stroke-dasharray="150.8" stroke-dashoffset="150.8"></circle>
+      </svg>
+      <div class="send-pct" id="sendPct">0%</div>
+    </div>
+    <button class="send-cancel" id="sendCancelBtn">Cancelar</button>
+  </div>
+</div>
+
+<div class="toast" id="toast">
+  <svg viewBox="0 0 24 24"><path d="M9 16.2L4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg>
+  <span id="toastText"></span>
+</div>
+
+<script>
+(function(){
+  const sheet        = document.getElementById('sheet');
+  const scrim        = document.getElementById('scrim');
+  const grabberZone  = document.getElementById('grabberZone');
+  const sheetBody    = document.getElementById('sheetBody');
+  const deviceGrid   = document.getElementById('deviceGrid');
+  const emptySearch  = document.getElementById('emptySearch');
+  const foundCount   = document.getElementById('foundCount');
+  const sendOverlay  = document.getElementById('sendOverlay');
+  const sendAvatar   = document.getElementById('sendAvatar');
+  const sendTitle    = document.getElementById('sendTitle');
+  const sendSub      = document.getElementById('sendSub');
+  const sendRingFill = document.getElementById('sendRingFill');
+  const sendPct      = document.getElementById('sendPct');
+  const sendCancelBtn= document.getElementById('sendCancelBtn');
+  const toast        = document.getElementById('toast');
+  const toastText    = document.getElementById('toastText');
+
+  const devices = new Map();
+  const RING_C = 2 * Math.PI * 24;
+  let sendingDeviceId = null;
+  let sendTimer = null;
+
+  function distanceTier(m){
+    if(m == null) return 'mid';
+    if(m <= 2) return 'near';
+    if(m <= 6) return 'mid';
+    return 'far';
+  }
+
+  function renderDevices(){
+    const list = Array.from(devices.values());
+    foundCount.textContent = list.length;
+    emptySearch.style.display = list.length === 0 ? 'flex' : 'none';
+    deviceGrid.style.display = list.length === 0 ? 'none' : 'grid';
+    deviceGrid.innerHTML = '';
+
+    list.forEach((d, i) => {
+      const tier = distanceTier(d.distance);
+      const card = document.createElement('div');
+      card.className = 'device-card' + (d.id === sendingDeviceId ? ' selecting' : '');
+      card.dataset.id = d.id;
+      card.innerHTML = `
+        <div class="device-avatar-wrap" style="--delay:${(i%3)*0.35}s">
+          <div class="device-avatar ${tier}">${d.emoji || '📱'}</div>
+          <div class="device-bt-badge"><svg viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11M6.5 12h11"/></svg></div>
+        </div>
+        <div class="device-name">${(d.name||'Dispositivo').replace(/</g,'&lt;')}</div>
+        ${d.distance != null ? '<div class="device-distance '+tier+'">'+d.distance.toFixed(1)+' m</div>' : '<div class="device-progress">Detectado</div>'}
+      `;
+      const avatar = card.querySelector('.device-avatar');
+      let downT = null;
+
+      avatar.addEventListener('pointerdown', () => {
+        card.classList.add('pressed');
+        downT = Date.now();
+      });
+      avatar.addEventListener('pointerup', () => {
+        card.classList.remove('pressed');
+        openSendModal(d);
+      });
+      avatar.addEventListener('pointerleave', () => card.classList.remove('pressed'));
+
+      deviceGrid.appendChild(card);
+    });
+  }
+
+  function openSendModal(d){
+    sendingDeviceId = d.id;
+    renderDevices();
+    sendAvatar.textContent = d.emoji || '📱';
+    sendTitle.textContent = 'Enviando a ' + (d.name || 'dispositivo');
+    sendSub.textContent = 'Preparando archivo…';
+    sendPct.textContent = '0%';
+    sendRingFill.style.strokeDashoffset = RING_C;
+    sendOverlay.classList.add('show');
+    if(navigator.vibrate) navigator.vibrate(12);
+
+    if(typeof window.onDeviceSelect === 'function'){
+      window.onDeviceSelect(d.id, d);
+    } else {
+      simulateTransfer();
+    }
+  }
+
+  function simulateTransfer(){
+    let p = 0;
+    clearInterval(sendTimer);
+    sendTimer = setInterval(() => {
+      p += Math.random()*14 + 6;
+      if(p >= 100){ p = 100; clearInterval(sendTimer); }
+      window.setSendProgress(p);
+      if(p >= 100){
+        setTimeout(() => {
+          closeSendModal();
+          showToast('Archivo enviado correctamente', true);
+        }, 400);
+      }
+    }, 260);
+  }
+
+  function closeSendModal(){
+    sendOverlay.classList.remove('show');
+    sendingDeviceId = null;
+    clearInterval(sendTimer);
+    renderDevices();
+  }
+  sendCancelBtn.addEventListener('click', () => {
+    closeSendModal();
+    showToast('Envío cancelado', false);
+    if(typeof window.onSendCancel === 'function') window.onSendCancel();
+  });
+
+  window.setSendProgress = function(pct){
+    pct = Math.max(0, Math.min(100, pct));
+    sendPct.textContent = Math.round(pct) + '%';
+    sendSub.textContent = pct < 100 ? 'Transfiriendo…' : 'Completado';
+    sendRingFill.style.strokeDashoffset = RING_C - (RING_C * pct/100);
+  };
+
+  /* ============ ABRIR / CERRAR LA HOJA FLOTANTE ============ */
+  function open(){
+    scrim.classList.add('show');
+    sheet.classList.add('open');
+  }
+  function close(){
+    scrim.classList.remove('show');
+    sheet.classList.remove('open');
+    if(typeof window.onDismiss === 'function') window.onDismiss();
+  }
+  window.openAirDrop = open;
+  window.closeAirDrop = close;
+
+  scrim.addEventListener('click', close);
+
+  /* -------- arrastrar la hoja hacia abajo para cerrar -------- */
+  let startY = 0, currentY = 0, draggingSheet = false;
+  grabberZone.addEventListener('pointerdown', (e) => {
+    startY = e.clientY; draggingSheet = true;
+    sheet.classList.add('dragging');
+  });
+  window.addEventListener('pointermove', (e) => {
+    if(!draggingSheet) return;
+    currentY = Math.max(0, e.clientY - startY);
+    sheet.style.transform = 'translateY(' + currentY + 'px)';
+  });
+  window.addEventListener('pointerup', () => {
+    if(!draggingSheet) return;
+    draggingSheet = false;
+    sheet.classList.remove('dragging');
+    sheet.style.transform = '';
+    if(currentY > 120){ close(); } else { sheet.classList.add('open'); }
+    currentY = 0;
+  });
+
+  /* -------- también se puede arrastrar el cuerpo cuando está en el tope -------- */
+  let bodyStartY = 0, bodyDragging = false;
+  sheetBody.addEventListener('pointerdown', (e) => {
+    if(sheetBody.scrollTop <= 0){ bodyStartY = e.clientY; bodyDragging = true; }
+  });
+  sheetBody.addEventListener('pointermove', (e) => {
+    if(!bodyDragging) return;
+    const dy = e.clientY - bodyStartY;
+    if(dy > 0 && sheetBody.scrollTop <= 0){
+      sheet.classList.add('dragging');
+      sheet.style.transform = 'translateY(' + dy + 'px)';
+    }
+  });
+  sheetBody.addEventListener('pointerup', (e) => {
+    if(!bodyDragging) return;
+    bodyDragging = false;
+    const dy = Math.max(0, e.clientY - bodyStartY);
+    sheet.classList.remove('dragging');
+    sheet.style.transform = '';
+    if(dy > 120) close();
+  });
+
+  let toastTimer;
+  function showToast(text, success){
+    if(!text) return;
+    toastText.textContent = text;
+    toast.querySelector('svg').style.display = success ? 'block' : 'none';
+    toast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toast.classList.remove('show'), 2000);
+  }
+  window.showToast = showToast;
+
+  /* ============ API PÚBLICA ============ */
+  // data: {id, name, emoji, distance(metros), avatarUrl}
+  window.addDevice = function(data){
+    if(!data || !data.id) return;
+    devices.set(data.id, Object.assign({emoji:'📱'}, devices.get(data.id)||{}, data));
+    renderDevices();
+  };
+  window.updateDeviceDistance = function(id, meters){
+    const d = devices.get(id);
+    if(!d) return;
+    d.distance = meters;
+    renderDevices();
+  };
+  window.removeDevice = function(id){
+    devices.delete(id);
+    if(sendingDeviceId === id) closeSendModal();
+    renderDevices();
+  };
+  window.clearDevices = function(){
+    devices.clear();
+    renderDevices();
+  };
+  window.completeSend = function(success, message){
+    closeSendModal();
+    showToast(message || (success ? 'Archivo enviado correctamente' : 'Error al enviar'), success);
+  };
+
+  /* -------- demo inicial (puedes borrar estas líneas al integrar datos reales) -------- */
+  renderDevices();
+  open();
+  setTimeout(() => window.addDevice({id:'d1', name:'DIRECT-d Pixel 7', emoji:'📱', distance:1.2}), 500);
+})();
+</script>
+
+</body>
+</html>

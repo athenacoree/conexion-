@@ -1,0 +1,896 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Envíos</title>
+<style>
+  :root{
+    --blue-1:#2F8CFF;
+    --blue-2:#0B6CFF;
+    --bg:#000000;
+    --card:#1C1C1E;
+    --card-2:#232326;
+    --divider:rgba(84,84,88,0.42);
+    --system-gray:#8E8E93;
+    --green:#34C759;
+    --red:#FF3B30;
+    --orange:#FF9F0A;
+    --purple:#BF5AF2;
+    --pink:#FF375F;
+    --teal:#64D2FF;
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{
+    height:100%;
+    background:var(--bg);
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display","Helvetica Neue",Arial,sans-serif;
+    overflow:hidden;
+    color:#fff;
+  }
+
+  .app{
+    width:100%;height:100dvh;height:100vh;
+    background:radial-gradient(circle at 50% 0%, #0c1220 0%, #000 55%);
+    display:flex;flex-direction:column;
+    overflow:hidden;
+    position:relative;
+  }
+
+  /* ============ HEADER ============ */
+  .top-header{
+    position:relative;
+    z-index:50;
+    padding-top:calc(var(--safe-top) + 6px);
+    padding-left:16px;
+    padding-right:16px;
+    flex-shrink:0;
+    background:rgba(10,10,12,0.82);
+    -webkit-backdrop-filter:saturate(180%) blur(20px);
+    backdrop-filter:saturate(180%) blur(20px);
+  }
+  .status-row{
+    display:flex;align-items:center;justify-content:space-between;
+    height:28px;
+  }
+  .status-pill{
+    display:flex;align-items:center;gap:6px;
+    font-size:13px;color:var(--blue-1);font-weight:600;
+  }
+  .status-pill .dot{
+    width:7px;height:7px;border-radius:50%;
+    background:var(--blue-1);
+    box-shadow:0 0 7px rgba(47,140,255,0.9);
+    animation:pulseDot 1.8s infinite ease-in-out;
+  }
+  @keyframes pulseDot{
+    0%,100%{opacity:1;transform:scale(1);}
+    50%{opacity:0.4;transform:scale(0.75);}
+  }
+  .settings-mini{
+    width:26px;height:26px;border-radius:50%;
+    background:rgba(118,118,128,0.24);
+    display:flex;align-items:center;justify-content:center;
+    color:var(--system-gray);
+  }
+  .settings-mini svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.8;}
+
+  .title-row{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:4px 0 12px;
+  }
+  .big-title{font-size:33px;font-weight:800;letter-spacing:-0.4px;}
+
+  .segmented{display:flex;gap:6px;padding-bottom:14px;}
+  .seg-item{
+    flex:1;text-align:center;padding:7px 0;
+    font-size:13.5px;font-weight:600;color:var(--system-gray);
+    border-radius:9px;background:rgba(118,118,128,0.16);
+    transition:background 0.15s,color 0.15s;
+  }
+  .seg-item.active{background:rgba(118,118,128,0.34);color:#fff;}
+
+  /* ============ SCROLL AREA ============ */
+  .scroll-area{
+    flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;
+    scrollbar-width:none;
+    padding:14px 16px calc(100px + var(--safe-bottom));
+  }
+  .scroll-area::-webkit-scrollbar{display:none;}
+
+  /* ============ STORAGE SUMMARY CARD ============ */
+  .storage-card{
+    position:relative;
+    border-radius:22px;
+    padding:20px;
+    background:linear-gradient(150deg, rgba(47,140,255,0.22), rgba(191,90,242,0.12) 55%, rgba(28,28,30,0.6));
+    border:1px solid rgba(255,255,255,0.08);
+    overflow:hidden;
+    margin-bottom:22px;
+  }
+  .storage-card::before{
+    content:'';
+    position:absolute;
+    width:220px;height:220px;
+    background:radial-gradient(circle, rgba(47,140,255,0.35), transparent 70%);
+    top:-90px;right:-70px;
+    filter:blur(10px);
+    pointer-events:none;
+  }
+  .storage-top{
+    display:flex;align-items:center;gap:14px;
+    position:relative;z-index:1;
+  }
+  .storage-icon{
+    width:52px;height:52px;border-radius:16px;
+    background:linear-gradient(160deg,var(--blue-1),var(--blue-2));
+    display:flex;align-items:center;justify-content:center;
+    box-shadow:0 8px 20px rgba(11,108,255,0.4);
+    flex-shrink:0;
+  }
+  .storage-icon svg{width:26px;height:26px;stroke:#fff;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;}
+  .storage-text h2{font-size:18px;font-weight:700;margin-bottom:2px;}
+  .storage-text p{font-size:13.5px;color:rgba(255,255,255,0.6);}
+
+  .storage-stats{
+    display:flex;
+    gap:10px;
+    margin-top:18px;
+    position:relative;z-index:1;
+  }
+  .stat-chip{
+    flex:1;
+    background:rgba(0,0,0,0.28);
+    border-radius:14px;
+    padding:10px 12px;
+    border:1px solid rgba(255,255,255,0.06);
+  }
+  .stat-chip .stat-num{font-size:19px;font-weight:800;letter-spacing:-0.3px;}
+  .stat-chip .stat-label{font-size:11.5px;color:rgba(255,255,255,0.55);margin-top:1px;}
+
+  .storage-bar-track{
+    margin-top:14px;
+    height:6px;
+    border-radius:4px;
+    background:rgba(255,255,255,0.1);
+    overflow:hidden;
+    position:relative;z-index:1;
+  }
+  .storage-bar-fill{
+    height:100%;
+    width:0%;
+    border-radius:4px;
+    background:linear-gradient(90deg,var(--blue-1),var(--purple));
+    transition:width 0.6s cubic-bezier(.2,.9,.3,1);
+  }
+
+  /* ============ SECTION LABEL ============ */
+  .section-label{
+    font-size:12px;font-weight:700;color:var(--system-gray);
+    letter-spacing:0.4px;text-transform:uppercase;
+    padding:4px 4px 8px;
+  }
+
+  /* ============ FILE ROW ============ */
+  .file-track{
+    position:relative;
+    overflow:hidden;
+    border-radius:16px;
+    margin-bottom:9px;
+  }
+  .swipe-actions{
+    position:absolute;top:0;right:0;bottom:0;display:flex;
+  }
+  .swipe-action{
+    width:64px;display:flex;flex-direction:column;align-items:center;justify-content:center;
+    gap:2px;color:#fff;font-size:10.5px;font-weight:600;border:none;
+  }
+  .swipe-action svg{width:17px;height:17px;stroke:#fff;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;}
+  .swipe-action.share{background:var(--blue-2);}
+  .swipe-action.delete{background:var(--red);border-radius:0 16px 16px 0;}
+
+  .file-row{
+    position:relative;
+    display:flex;align-items:center;gap:12px;
+    padding:12px 14px;
+    background:var(--card);
+    border-radius:16px;
+    border:1px solid rgba(255,255,255,0.05);
+    transition:transform 0.28s cubic-bezier(.2,.9,.3,1), background 0.15s;
+    touch-action:pan-y;
+  }
+  .file-row.pressed{background:var(--card-2);}
+
+  .file-icon{
+    width:46px;height:46px;border-radius:13px;
+    display:flex;align-items:center;justify-content:center;
+    flex-shrink:0;
+    overflow:hidden;
+    position:relative;
+  }
+  .file-icon img{width:100%;height:100%;object-fit:cover;}
+  .file-icon svg{width:21px;height:21px;stroke:#fff;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;}
+  .file-icon.image{background:linear-gradient(160deg,#FF9F0A,#FF6B00);}
+  .file-icon.video{background:linear-gradient(160deg,var(--pink),#C4185C);}
+  .file-icon.audio{background:linear-gradient(160deg,var(--purple),#7B2FCF);}
+  .file-icon.doc{background:linear-gradient(160deg,var(--teal),#0A84FF);}
+  .file-icon.archive{background:linear-gradient(160deg,#8E8E93,#636366);}
+  .file-icon.apk{background:linear-gradient(160deg,var(--green),#1F9E46);}
+  .file-icon.generic{background:linear-gradient(160deg,#636366,#48484A);}
+
+  .file-body{flex:1;min-width:0;}
+  .file-line1{
+    display:flex;align-items:center;justify-content:space-between;gap:8px;
+  }
+  .file-name{
+    font-size:15.5px;font-weight:600;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
+  .dir-badge{
+    width:16px;height:16px;border-radius:50%;
+    display:flex;align-items:center;justify-content:center;
+    flex-shrink:0;
+  }
+  .dir-badge svg{width:9px;height:9px;stroke:#fff;fill:none;stroke-width:3;stroke-linecap:round;stroke-linejoin:round;}
+  .dir-badge.received{background:var(--green);}
+  .dir-badge.sent{background:var(--blue-1);}
+
+  .file-line2{
+    display:flex;align-items:center;justify-content:space-between;gap:8px;
+    margin-top:3px;
+  }
+  .file-meta{
+    font-size:12.5px;color:var(--system-gray);
+    display:flex;align-items:center;gap:5px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
+
+  .status-icon{flex-shrink:0;display:flex;align-items:center;justify-content:center;}
+  .status-icon.done{color:var(--green);}
+  .status-icon.done svg{width:19px;height:19px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;}
+  .status-icon.failed{color:var(--red);}
+  .status-icon.failed svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;}
+
+  /* anillo de progreso circular para transferencias activas */
+  .progress-ring{
+    position:relative;width:30px;height:30px;flex-shrink:0;
+  }
+  .progress-ring svg{width:30px;height:30px;transform:rotate(-90deg);}
+  .progress-ring circle{fill:none;stroke-width:3;}
+  .progress-ring .track{stroke:rgba(255,255,255,0.12);}
+  .progress-ring .fill{
+    stroke:var(--blue-1);
+    stroke-linecap:round;
+    transition:stroke-dashoffset 0.25s linear;
+  }
+  .progress-ring .pct{
+    position:absolute;inset:0;
+    display:flex;align-items:center;justify-content:center;
+    font-size:8.5px;font-weight:700;color:#fff;
+  }
+
+  .file-row.transferring{
+    background:linear-gradient(90deg, rgba(47,140,255,0.10), rgba(28,28,30,1) 40%);
+  }
+  .mini-bar-track{
+    margin-top:6px;height:3px;border-radius:2px;
+    background:rgba(255,255,255,0.1);overflow:hidden;
+  }
+  .mini-bar-fill{
+    height:100%;border-radius:2px;
+    background:linear-gradient(90deg,var(--blue-1),var(--teal));
+    transition:width 0.25s linear;
+  }
+
+  /* ============ EMPTY STATE ============ */
+  .empty-state{
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    text-align:center;padding:60px 40px 0;color:var(--system-gray);
+  }
+  .empty-orb{
+    position:relative;
+    width:110px;height:110px;
+    margin-bottom:22px;
+    display:flex;align-items:center;justify-content:center;
+  }
+  .empty-orb .ring{
+    position:absolute;inset:0;border-radius:50%;
+    border:1.5px solid rgba(47,140,255,0.35);
+    animation:orbPulse 2.6s infinite ease-out;
+  }
+  .empty-orb .ring:nth-child(2){animation-delay:0.9s;}
+  .empty-orb .ring:nth-child(3){animation-delay:1.8s;}
+  @keyframes orbPulse{
+    0%{transform:scale(0.55);opacity:0.9;}
+    100%{transform:scale(1.35);opacity:0;}
+  }
+  .empty-orb .core{
+    width:62px;height:62px;border-radius:50%;
+    background:linear-gradient(160deg,var(--blue-1),var(--blue-2));
+    display:flex;align-items:center;justify-content:center;
+    box-shadow:0 10px 26px rgba(11,108,255,0.45);
+    z-index:1;
+  }
+  .empty-orb .core svg{width:28px;height:28px;stroke:#fff;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;}
+  .empty-state h3{font-size:19px;font-weight:700;color:#fff;margin-bottom:7px;}
+  .empty-state p{font-size:14.5px;line-height:1.45;max-width:250px;}
+
+  /* ============ TAB BAR (igual que chats) ============ */
+  .tab-bar{
+    position:absolute;left:0;right:0;bottom:0;
+    display:flex;padding-top:6px;padding-bottom:calc(4px + var(--safe-bottom));
+    background:rgba(10,10,12,0.82);
+    -webkit-backdrop-filter:saturate(180%) blur(20px);
+    backdrop-filter:saturate(180%) blur(20px);
+    border-top:0.5px solid var(--divider);
+  }
+  .tab-item{
+    flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;
+    color:var(--system-gray);font-size:10.5px;font-weight:500;padding:2px 0;
+  }
+  .tab-item svg{width:24px;height:24px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;}
+  .tab-item.active{color:var(--blue-1);}
+  .tab-item.active svg{fill:rgba(11,108,255,0.14);}
+
+  /* ============ MENÚ CONTEXTUAL (cristal) ============ */
+  .ctx-overlay{
+    position:fixed;inset:0;z-index:900;
+    background:rgba(0,0,0,0);
+    -webkit-backdrop-filter:blur(0px) saturate(120%);
+    backdrop-filter:blur(0px) saturate(120%);
+    opacity:0;pointer-events:none;
+    transition:background 0.32s ease;
+  }
+  .ctx-overlay.show{
+    opacity:1;pointer-events:auto;
+    background:rgba(0,0,0,0.32);
+    -webkit-backdrop-filter:blur(22px) saturate(150%);
+    backdrop-filter:blur(22px) saturate(150%);
+  }
+  .ctx-clone{
+    position:fixed;left:0;right:0;z-index:901;
+    display:flex;align-items:center;gap:12px;
+    padding:12px 14px;
+    background:var(--card);
+    border-radius:16px;
+    margin:0 16px;
+    box-shadow:0 20px 45px rgba(0,0,0,0.45);
+    transform:scale(0.94);opacity:0;
+    transition:transform 0.3s cubic-bezier(.22,1.1,.36,1), opacity 0.22s ease;
+    pointer-events:none;
+  }
+  .ctx-overlay.show .ctx-clone{transform:scale(1.03);opacity:1;}
+  .ctx-menu{
+    position:fixed;left:0;right:0;z-index:901;
+    width:240px;margin:0 auto;
+    border-radius:16px;overflow:hidden;
+    background:rgba(58,58,60,0.72);
+    -webkit-backdrop-filter:blur(34px) saturate(180%);
+    backdrop-filter:blur(34px) saturate(180%);
+    box-shadow:0 20px 45px rgba(0,0,0,0.4);
+    transform:scale(0.85);opacity:0;
+    transition:transform 0.3s cubic-bezier(.22,1.1,.36,1) 0.03s, opacity 0.24s ease;
+  }
+  .ctx-overlay.show .ctx-menu{transform:scale(1);opacity:1;}
+  .ctx-item{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:12.5px 16px;font-size:16.5px;color:#fff;
+    border-bottom:0.5px solid rgba(255,255,255,0.14);
+    -webkit-user-select:none;user-select:none;
+    transition:background 0.1s;
+  }
+  .ctx-item:last-child{border-bottom:none;}
+  .ctx-item:active{background:rgba(255,255,255,0.12);}
+  .ctx-item.destructive{color:var(--red);}
+  .ctx-item .ic{width:21px;height:21px;display:flex;align-items:center;justify-content:center;}
+  .ctx-item .ic svg{width:19px;height:19px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;}
+
+  /* toast */
+  .toast{
+    position:fixed;bottom:110px;left:50%;
+    transform:translateX(-50%) translateY(10px);
+    background:rgba(40,40,42,0.9);
+    -webkit-backdrop-filter:blur(14px);
+    backdrop-filter:blur(14px);
+    color:#fff;padding:10px 18px;border-radius:14px;
+    font-size:14px;font-weight:500;z-index:1000;
+    opacity:0;transition:opacity 0.25s ease, transform 0.25s ease;
+    pointer-events:none;display:flex;align-items:center;gap:7px;
+    max-width:82%;
+  }
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+  .toast svg{width:16px;height:16px;fill:var(--green);flex-shrink:0;}
+  .toast a{color:var(--blue-1);font-weight:600;text-decoration:none;pointer-events:auto;}
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <div class="top-header">
+    <div class="status-row">
+      <div class="status-pill"><span class="dot"></span> AirDrop & Sonar Activo</div>
+      <div class="settings-mini">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+      </div>
+    </div>
+    <div class="title-row">
+      <div class="big-title">Envíos</div>
+    </div>
+    <div class="segmented">
+      <div class="seg-item active" data-filter="all">Todos</div>
+      <div class="seg-item" data-filter="received">Recibidos</div>
+      <div class="seg-item" data-filter="sent">Enviados</div>
+    </div>
+  </div>
+
+  <div class="scroll-area" id="scrollArea">
+
+    <div class="storage-card">
+      <div class="storage-top">
+        <div class="storage-icon">
+          <svg viewBox="0 0 24 24"><path d="M12 3v13m0 0l-4-4m4 4l4-4M4 17v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg>
+        </div>
+        <div class="storage-text">
+          <h2>Almacenamiento P2P</h2>
+          <p id="storageSubtitle">0 archivos · 0.0 MB recibidos</p>
+        </div>
+      </div>
+      <div class="storage-stats">
+        <div class="stat-chip">
+          <div class="stat-num" id="statTotal">0</div>
+          <div class="stat-label">Archivos</div>
+        </div>
+        <div class="stat-chip">
+          <div class="stat-num" id="statSize">0 MB</div>
+          <div class="stat-label">Recibido</div>
+        </div>
+        <div class="stat-chip">
+          <div class="stat-num" id="statActive">0</div>
+          <div class="stat-label">En curso</div>
+        </div>
+      </div>
+      <div class="storage-bar-track"><div class="storage-bar-fill" id="storageBarFill"></div></div>
+    </div>
+
+    <div class="section-label" id="sectionLabel" style="display:none;">Recientes</div>
+    <div id="fileList"></div>
+
+    <div class="empty-state" id="emptyState">
+      <div class="empty-orb">
+        <div class="ring"></div><div class="ring"></div><div class="ring"></div>
+        <div class="core">
+          <svg viewBox="0 0 24 24"><path d="M12 3v13m0 0l-4-4m4 4l4-4M4 17v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg>
+        </div>
+      </div>
+      <h3>Todavía no hay archivos</h3>
+      <p>Los archivos que envíes o recibas por AirDrop y Sonar aparecerán aquí automáticamente.</p>
+    </div>
+
+  </div>
+
+  <div class="tab-bar">
+    <div class="tab-item">
+      <svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 1 3.3 6.5"/><path d="M4 12V6"/><path d="M4 12H2"/><circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none"/></svg>
+      <span>Escáner</span>
+    </div>
+    <div class="tab-item">
+      <svg viewBox="0 0 24 24"><path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+      <span>Chats</span>
+    </div>
+    <div class="tab-item active">
+      <svg viewBox="0 0 24 24"><path d="M12 3v13m0 0l-4-4m4 4l4-4M4 17v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg>
+      <span>Envíos</span>
+    </div>
+    <div class="tab-item">
+      <svg viewBox="0 0 24 24"><rect x="3" y="4" width="14" height="12" rx="2"/><path d="M17 9l4-2.5v11L17 15"/></svg>
+      <span>Media</span>
+    </div>
+    <div class="tab-item">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+      <span>Ajustes</span>
+    </div>
+  </div>
+
+  <!-- Menú contextual al mantener presionado un archivo -->
+  <div class="ctx-overlay" id="ctxOverlay">
+    <div class="ctx-clone" id="ctxClone"></div>
+    <div class="ctx-menu" id="ctxMenu">
+      <div class="ctx-item" data-action="open">
+        <span>Abrir</span>
+        <span class="ic"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M9 9h6v6H9z"/></svg></span>
+      </div>
+      <div class="ctx-item" data-action="share">
+        <span>Compartir</span>
+        <span class="ic"><svg viewBox="0 0 24 24"><path d="M15 10l6 4-6 4M21 14H10a6 6 0 0 1-6-6V6"/></svg></span>
+      </div>
+      <div class="ctx-item" data-action="save">
+        <span>Guardar en galería</span>
+        <span class="ic"><svg viewBox="0 0 24 24"><path d="M12 3v13m0 0l-4-4m4 4l4-4M4 17v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg></span>
+      </div>
+      <div class="ctx-item" data-action="rename">
+        <span>Renombrar</span>
+        <span class="ic"><svg viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></span>
+      </div>
+      <div class="ctx-item destructive" data-action="delete">
+        <span>Eliminar</span>
+        <span class="ic"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13"/></svg></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast">
+    <svg viewBox="0 0 24 24"><path d="M9 16.2L4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg>
+    <span id="toastText"></span>
+  </div>
+</div>
+
+<script>
+(function(){
+  const fileList     = document.getElementById('fileList');
+  const emptyState   = document.getElementById('emptyState');
+  const sectionLabel = document.getElementById('sectionLabel');
+  const ctxOverlay   = document.getElementById('ctxOverlay');
+  const ctxClone     = document.getElementById('ctxClone');
+  const ctxMenu      = document.getElementById('ctxMenu');
+  const toast        = document.getElementById('toast');
+  const toastText    = document.getElementById('toastText');
+  const statTotal    = document.getElementById('statTotal');
+  const statSize     = document.getElementById('statSize');
+  const statActive   = document.getElementById('statActive');
+  const storageSubtitle = document.getElementById('storageSubtitle');
+  const storageBarFill  = document.getElementById('storageBarFill');
+
+  const files = new Map(); // id -> data
+  let activeFilter = 'all';
+  let activeFileId = null;
+
+  const ICONS = {
+    image:  '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.7"/><path d="M21 15l-5-5L5 21"/></svg>',
+    video:  '<svg viewBox="0 0 24 24"><rect x="2" y="5" width="14" height="14" rx="2"/><path d="M16 9.5l6-3.5v12l-6-3.5"/></svg>',
+    audio:  '<svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>',
+    doc:    '<svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M9 13h6M9 17h6M9 9h1"/></svg>',
+    archive:'<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 4v16M12 8h.01M12 12h.01M12 16h.01"/></svg>',
+    apk:    '<svg viewBox="0 0 24 24"><rect x="5" y="2" width="14" height="20" rx="3"/><path d="M9 6h6M9 18h6"/></svg>',
+    generic:'<svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>'
+  };
+
+  function typeOf(name){
+    const ext = (name.split('.').pop()||'').toLowerCase();
+    if(['jpg','jpeg','png','gif','webp','heic'].includes(ext)) return 'image';
+    if(['mp4','mov','mkv','avi','webm'].includes(ext)) return 'video';
+    if(['mp3','wav','m4a','ogg','flac'].includes(ext)) return 'audio';
+    if(['pdf','doc','docx','txt','xls','xlsx','ppt','pptx'].includes(ext)) return 'doc';
+    if(['zip','rar','7z','tar','gz'].includes(ext)) return 'archive';
+    if(ext === 'apk') return 'apk';
+    return 'generic';
+  }
+
+  function fmtSize(bytes){
+    if(bytes == null) return '';
+    if(bytes < 1024) return bytes + ' B';
+    if(bytes < 1024*1024) return (bytes/1024).toFixed(0) + ' KB';
+    return (bytes/(1024*1024)).toFixed(1) + ' MB';
+  }
+
+  function updateSummary(){
+    let total = files.size, receivedBytes = 0, active = 0;
+    files.forEach(f => {
+      if(f.direction === 'received' && f.status === 'done') receivedBytes += (f.size||0);
+      if(f.status === 'progress') active++;
+    });
+    statTotal.textContent = total;
+    statSize.textContent = fmtSize(receivedBytes).replace(' ', '\u00A0');
+    statActive.textContent = active;
+    storageSubtitle.textContent = total + (total===1?' archivo · ':' archivos · ') + fmtSize(receivedBytes) + ' recibidos';
+    const pct = Math.min(100, total ? (total % 20) * 5 + 8 : 0);
+    storageBarFill.style.width = pct + '%';
+  }
+
+  function passesFilter(f){
+    if(activeFilter === 'received') return f.direction === 'received';
+    if(activeFilter === 'sent') return f.direction === 'sent';
+    return true;
+  }
+
+  function sortedFiles(){
+    return Array.from(files.values())
+      .filter(passesFilter)
+      .sort((a,b) => (b.sortTime||0) - (a.sortTime||0));
+  }
+
+  function progressRingHTML(pct){
+    const r = 12, c = 2*Math.PI*r;
+    const offset = c - (c * pct/100);
+    return `
+      <div class="progress-ring">
+        <svg viewBox="0 0 30 30">
+          <circle class="track" cx="15" cy="15" r="${r}"></circle>
+          <circle class="fill" cx="15" cy="15" r="${r}" stroke-dasharray="${c}" stroke-dashoffset="${offset}"></circle>
+        </svg>
+        <div class="pct">${pct}%</div>
+      </div>`;
+  }
+
+  function renderRowHTML(f){
+    const type = typeOf(f.name || '');
+    const iconInner = f.thumbnail ? '<img src="'+f.thumbnail+'" alt="">' : (ICONS[type] || ICONS.generic);
+    const dirIcon = f.direction === 'received'
+      ? '<svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>'
+      : '<svg viewBox="0 0 24 24"><path d="M18 15l-6-6-6 6"/></svg>';
+
+    let statusHTML = '';
+    if(f.status === 'progress'){
+      statusHTML = progressRingHTML(f.progress||0);
+    } else if(f.status === 'failed'){
+      statusHTML = '<div class="status-icon failed"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M15 9l-6 6M9 9l6 6"/></svg></div>';
+    } else {
+      statusHTML = '<div class="status-icon done"><svg viewBox="0 0 24 24"><path d="M9 16.2L4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg></div>';
+    }
+
+    const miniBar = f.status === 'progress'
+      ? '<div class="mini-bar-track"><div class="mini-bar-fill" style="width:'+(f.progress||0)+'%"></div></div>'
+      : '';
+
+    return `
+      <div class="file-icon ${type}">${iconInner}</div>
+      <div class="file-body">
+        <div class="file-line1">
+          <div class="file-name">${(f.name||'').replace(/</g,'&lt;')}</div>
+          ${statusHTML}
+        </div>
+        <div class="file-line2">
+          <div class="file-meta">
+            <span class="dir-badge ${f.direction}">${dirIcon}</span>
+            ${fmtSize(f.size)} · ${f.time||''} ${f.peer ? ('· '+f.peer.replace(/</g,'&lt;')) : ''}
+          </div>
+        </div>
+        ${miniBar}
+      </div>
+    `;
+  }
+
+  function render(){
+    const list = sortedFiles();
+    fileList.innerHTML = '';
+    emptyState.style.display = (files.size === 0) ? 'flex' : 'none';
+    sectionLabel.style.display = (list.length > 0) ? 'block' : 'none';
+
+    if(list.length === 0 && files.size > 0){
+      const noRes = document.createElement('div');
+      noRes.style.cssText = 'padding:40px 20px;text-align:center;color:var(--system-gray);font-size:14.5px;';
+      noRes.textContent = activeFilter === 'received' ? 'No has recibido archivos' : 'No has enviado archivos';
+      fileList.appendChild(noRes);
+      updateSummary();
+      return;
+    }
+
+    list.forEach(f => {
+      const track = document.createElement('div');
+      track.className = 'file-track';
+      track.dataset.id = f.id;
+      track.innerHTML = `
+        <div class="swipe-actions">
+          <button class="swipe-action share" data-swipe="share">
+            <svg viewBox="0 0 24 24"><path d="M15 10l6 4-6 4M21 14H10a6 6 0 0 1-6-6V6"/></svg>
+            Compartir
+          </button>
+          <button class="swipe-action delete" data-swipe="delete">
+            <svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13"/></svg>
+            Eliminar
+          </button>
+        </div>
+        <div class="file-row ${f.status==='progress'?'transferring':''}" data-id="${f.id}">
+          ${renderRowHTML(f)}
+        </div>
+      `;
+      fileList.appendChild(track);
+      bindRow(track, f.id);
+    });
+
+    updateSummary();
+  }
+
+  /* -------- gestos: tap, swipe, long-press -------- */
+  function bindRow(track, id){
+    const row = track.querySelector('.file-row');
+    let downX=0, downY=0, curX=0, dragging=false, swiped=false;
+    let pressTimer=null, longPressed=false;
+    const SWIPE_MAX = 128;
+
+    function openMenu(){
+      longPressed = true;
+      if(navigator.vibrate) navigator.vibrate(10);
+      showContextMenu(id, row);
+    }
+
+    row.addEventListener('pointerdown', (e) => {
+      if(e.pointerType === 'mouse' && e.button !== 0) return;
+      downX = e.clientX; downY = e.clientY; curX = 0;
+      dragging = false; longPressed = false;
+      row.classList.add('pressed');
+      pressTimer = setTimeout(openMenu, 480);
+    });
+
+    row.addEventListener('pointermove', (e) => {
+      const dx = e.clientX - downX;
+      const dy = e.clientY - downY;
+      if(!dragging && Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy)){
+        dragging = true;
+        clearTimeout(pressTimer);
+        row.classList.remove('pressed');
+      }
+      if(Math.abs(dy) > 10 && !dragging) clearTimeout(pressTimer);
+      if(dragging){
+        curX = Math.max(-SWIPE_MAX, Math.min(0, dx + (swiped ? -SWIPE_MAX : 0)));
+        row.style.transform = 'translateX(' + curX + 'px)';
+      }
+    });
+
+    function endDrag(){
+      clearTimeout(pressTimer);
+      row.classList.remove('pressed');
+      if(dragging){
+        if(curX < -SWIPE_MAX/2){
+          row.style.transform = 'translateX(-'+SWIPE_MAX+'px)';
+          swiped = true;
+        } else {
+          row.style.transform = 'translateX(0px)';
+          swiped = false;
+        }
+      }
+      dragging = false;
+    }
+    row.addEventListener('pointerup', (e) => {
+      endDrag();
+      if(!longPressed && !dragging && Math.abs(e.clientX-downX)<6 && Math.abs(e.clientY-downY)<6){
+        const f = files.get(id);
+        if(typeof window.onFileOpen === 'function') window.onFileOpen(id, f);
+      }
+    });
+    row.addEventListener('pointercancel', endDrag);
+    row.addEventListener('pointerleave', () => { if(dragging) endDrag(); });
+
+    track.querySelectorAll('.swipe-action').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const action = btn.dataset.swipe;
+        row.style.transform = 'translateX(0px)';
+        swiped = false;
+        handleAction(action, id);
+      });
+    });
+  }
+
+  /* -------- menú contextual con efecto de cristal -------- */
+  function showContextMenu(id, rowEl){
+    const f = files.get(id);
+    if(!f) return;
+    activeFileId = id;
+
+    const rect = rowEl.getBoundingClientRect();
+    ctxClone.style.width = (rect.width) + 'px';
+    ctxClone.style.top = rect.top + 'px';
+    ctxClone.innerHTML = renderRowHTML(f);
+
+    const menuHeight = 300;
+    const vh = window.innerHeight;
+    let menuTop = rect.bottom + 10;
+    if(menuTop + menuHeight > vh - 20){
+      menuTop = rect.top - menuHeight - 10;
+      if(menuTop < 60) menuTop = 60;
+    }
+    ctxMenu.style.top = menuTop + 'px';
+
+    ctxOverlay.classList.add('show');
+  }
+  function closeContextMenu(){
+    ctxOverlay.classList.remove('show');
+    activeFileId = null;
+  }
+  ctxOverlay.addEventListener('click', (e) => {
+    if(e.target === ctxOverlay) closeContextMenu();
+  });
+  document.querySelectorAll('.ctx-item').forEach(item => {
+    item.addEventListener('click', () => {
+      const action = item.dataset.action;
+      const id = activeFileId;
+      closeContextMenu();
+      handleAction(action, id);
+    });
+  });
+
+  function handleAction(action, id){
+    const f = files.get(id);
+    if(!f) return;
+    const labels = {
+      open: 'Abriendo archivo…',
+      share: 'Selecciona un chat para compartir',
+      save: 'Guardado en galería',
+      rename: 'Renombrando…',
+      delete: 'Archivo eliminado'
+    };
+    if(action === 'delete'){
+      files.delete(id);
+      render();
+      showToast(labels.delete, false);
+      if(typeof window.onFileAction === 'function') window.onFileAction('delete', id);
+      return;
+    }
+    showToast(labels[action] || '', action !== 'rename');
+    if(typeof window.onFileAction === 'function') window.onFileAction(action, id, f);
+  }
+
+  document.querySelectorAll('.seg-item').forEach(seg => {
+    seg.addEventListener('click', () => {
+      document.querySelectorAll('.seg-item').forEach(s => s.classList.remove('active'));
+      seg.classList.add('active');
+      activeFilter = seg.dataset.filter;
+      render();
+    });
+  });
+
+  let toastTimer;
+  function showToast(text, success){
+    if(!text) return;
+    toastText.textContent = text;
+    toast.querySelector('svg').style.display = success ? 'block' : 'none';
+    toast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toast.classList.remove('show'), 2000);
+  }
+  window.showToast = showToast;
+
+  /* ============ API PÚBLICA ============ */
+  // data: {id, name, size(bytes), direction:'received'|'sent', status:'done'|'progress'|'failed',
+  //         progress(0-100), time, sortTime(ms), peer(nombre del dispositivo), thumbnail(url)}
+  window.addFile = function(data){
+    if(!data || !data.id) return;
+    const existing = files.get(data.id) || {};
+    const merged = Object.assign({status:'done', progress:100, direction:'received'}, existing, data);
+    files.set(data.id, merged);
+    render();
+  };
+
+  window.updateFileProgress = function(id, progress){
+    const f = files.get(id);
+    if(!f) return;
+    f.status = 'progress';
+    f.progress = Math.max(0, Math.min(100, progress));
+    render();
+  };
+
+  window.markFileDone = function(id){
+    const f = files.get(id);
+    if(!f) return;
+    f.status = 'done';
+    f.progress = 100;
+    render();
+    showToast(f.name + ' recibido correctamente', true);
+  };
+
+  window.markFileFailed = function(id){
+    const f = files.get(id);
+    if(!f) return;
+    f.status = 'failed';
+    render();
+    showToast('Error al transferir ' + f.name, false);
+  };
+
+  window.removeFile = function(id){
+    files.delete(id);
+    render();
+  };
+
+  window.clearAllFiles = function(){
+    files.clear();
+    render();
+  };
+
+  render();
+})();
+</script>
+
+</body>
+</html>
