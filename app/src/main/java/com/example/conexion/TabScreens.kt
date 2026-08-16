@@ -1599,21 +1599,42 @@ fun TransfersTabScreen(
     transferHistory: List<DbTransferRecord>,
     onSelectFileToSend: () -> Unit
 ) {
-    var selectedCategory by remember { mutableStateOf(0) }
-    val categories = listOf("📁 Todos", "🖼️ Fotos", "🎥 Videos", "🎵 Música", "📄 Docs")
+    var activeFilter by remember { mutableStateOf("all") } // "all", "received", "sent"
 
-    // Storage & Cache Analyzer Calculations
+    // Storage & Cache Stats based on envios.html
     val totalReceivedCount = transferHistory.count { it.isIncoming }
-    val totalBytesUsed = transferHistory.filter { it.isIncoming }.sumOf { it.fileSize }
-    val totalMbUsed = String.format(Locale.US, "%.1f", totalBytesUsed.toDouble() / (1024 * 1024))
+    val totalSentCount = transferHistory.count { !it.isIncoming }
+    val totalBytesUsed = transferHistory.sumOf { it.fileSize }
+    val totalMbUsed = String.format(Locale.US, "%.1f MB", totalBytesUsed.toDouble() / (1024 * 1024))
     var cacheClearedToast by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp)
+            .background(if (isDark) Color(0xFF000000) else Color(0xFFF2F2F7))
+            .padding(14.dp)
     ) {
-        // Storage & Cache Usage Analyzer Widget
+        // envios.html Header
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 4.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Envíos",
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Black,
+                color = if (isDark) Color.White else Color(0xFF111114)
+            )
+
+            IconButton(onClick = onSelectFileToSend) {
+                Text("📤", fontSize = 20.sp)
+            }
+        }
+
+        // Live Storage Summary Card
         GlassCard(
             modifier = Modifier.fillMaxWidth(),
             isDark = isDark
@@ -1623,38 +1644,31 @@ fun TransfersTabScreen(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        modifier = Modifier
-                            .size(40.dp)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text("💾", fontSize = 18.sp)
-                    }
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Column {
-                        Text(
-                            text = "Almacenamiento P2P",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 14.sp,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = "$totalReceivedCount archivos ($totalMbUsed MB recibidos)",
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
+                Column {
+                    Text(
+                        text = "Transferencias P2P totales",
+                        fontSize = 11.sp,
+                        color = Color(0xFF8E8E93)
+                    )
+                    Text(
+                        text = "$totalMbUsed • ${transferHistory.size} archivos",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Black,
+                        color = if (isDark) Color.White else Color.Black
+                    )
+                    Text(
+                        text = "📥 $totalReceivedCount recibidos | 📤 $totalSentCount enviados",
+                        fontSize = 11.sp,
+                        color = Color(0xFF34C759),
+                        fontWeight = FontWeight.Bold
+                    )
                 }
 
                 OutlinedButton(
                     onClick = { cacheClearedToast = true },
-                    shape = RoundedCornerShape(12.dp),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                    shape = RoundedCornerShape(12.dp)
                 ) {
-                    Text("Limpiar Cache", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    Text("Limpiar", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -1668,13 +1682,47 @@ fun TransfersTabScreen(
                 text = "✨ Caché de transferencias optimizado",
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
-                color = Color(0xFF30D158),
-                modifier = Modifier.padding(top = 4.dp, start = 4.dp)
+                color = Color(0xFF34C759),
+                modifier = Modifier.padding(top = 4.dp)
             )
         }
 
-        Spacer(modifier = Modifier.height(14.dp))
-        // Active Transfer Live Speedometer Card
+        Spacer(modifier = Modifier.height(10.dp))
+
+        // Segmented Control ("Todos", "Recibidos", "Enviados")
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .background(if (isDark) Color(0xFF1C1C1E) else Color(0xFFE3E3E5))
+                .padding(3.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly
+        ) {
+            val filters = listOf("all" to "Todos", "received" to "Recibidos", "sent" to "Enviados")
+            filters.forEach { (key, label) ->
+                val isSel = activeFilter == key
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (isSel) (if (isDark) Color(0xFF232326) else Color.White) else Color.Transparent)
+                        .clickable { activeFilter = key }
+                        .padding(vertical = 6.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = label,
+                        fontSize = 12.sp,
+                        fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium,
+                        color = if (isDark) Color.White else Color.Black
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // Active Speedometer Box
         if (isTransferring) {
             GlassCard(
                 modifier = Modifier.fillMaxWidth(),
@@ -1689,15 +1737,14 @@ fun TransfersTabScreen(
                         Text(
                             text = "⚡ Transfiriendo archivo...",
                             fontWeight = FontWeight.Black,
-                            fontSize = 15.sp,
-                            color = MaterialTheme.colorScheme.primary
+                            fontSize = 14.sp,
+                            color = Color(0xFF0B6CFF)
                         )
-                        Spacer(modifier = Modifier.height(2.dp))
                         Text(
                             text = transferFileName,
                             fontWeight = FontWeight.Medium,
-                            fontSize = 13.sp,
-                            color = MaterialTheme.colorScheme.onSurface,
+                            fontSize = 12.sp,
+                            color = if (isDark) Color.White else Color.Black,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -1705,104 +1752,49 @@ fun TransfersTabScreen(
                     Text(
                         text = "${(transferProgress * 100).toInt()}%",
                         fontWeight = FontWeight.Black,
-                        fontSize = 20.sp,
-                        color = MaterialTheme.colorScheme.primary
+                        fontSize = 18.sp,
+                        color = Color(0xFF0B6CFF)
                     )
                 }
 
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(8.dp))
 
                 LinearProgressIndicator(
                     progress = { transferProgress },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(8.dp)
-                        .clip(RoundedCornerShape(4.dp)),
-                    color = MaterialTheme.colorScheme.primary,
-                    trackColor = MaterialTheme.colorScheme.primaryContainer
+                        .height(6.dp)
+                        .clip(RoundedCornerShape(3.dp)),
+                    color = Color(0xFF0B6CFF),
+                    trackColor = Color(0xFF0B6CFF).copy(alpha = 0.2f)
                 )
 
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(6.dp))
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Text(
-                        text = "Velocidad: $transferSpeed",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFF34C759)
-                    )
-                    Text(
-                        text = "ETA: $transferEta",
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    Text("Velocidad: $transferSpeed", fontSize = 11.sp, color = Color(0xFF34C759), fontWeight = FontWeight.Bold)
+                    Text("ETA: $transferEta", fontSize = 11.sp, color = Color(0xFF8E8E93))
                 }
             }
 
-            Spacer(modifier = Modifier.height(14.dp))
+            Spacer(modifier = Modifier.height(12.dp))
         }
 
-        // Send File CTA
-        Button(
-            onClick = onSelectFileToSend,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(52.dp),
-            shape = RoundedCornerShape(16.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-            elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp)
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("📤", fontSize = 18.sp)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Seleccionar y Enviar Archivo", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = Color.White)
-            }
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // Categories Row
-        LazyRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            items(categories.size) { idx ->
-                val isSel = selectedCategory == idx
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(100))
-                        .background(
-                            if (isSel) MaterialTheme.colorScheme.primary
-                            else if (isDark) Color(0xFF1E293B) else Color(0xFFF1F5F9)
-                        )
-                        .clickable { selectedCategory = idx }
-                        .padding(horizontal = 14.dp, vertical = 7.dp)
-                ) {
-                    Text(
-                        text = categories[idx],
-                        fontSize = 12.sp,
-                        fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium,
-                        color = if (isSel) Color.White else MaterialTheme.colorScheme.onSurface
-                    )
+        // File List
+        val filteredHistory = remember(transferHistory, activeFilter) {
+            transferHistory.filter {
+                when (activeFilter) {
+                    "received" -> it.isIncoming
+                    "sent" -> !it.isIncoming
+                    else -> true
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(14.dp))
-
-        Text(
-            text = "HISTORIAL DE TRANSFERENCIAS",
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Black,
-            color = MaterialTheme.colorScheme.primary,
-            letterSpacing = 1.sp
-        )
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        if (transferHistory.isEmpty()) {
+        if (filteredHistory.isEmpty()) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1810,23 +1802,21 @@ fun TransfersTabScreen(
                 contentAlignment = Alignment.Center
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("📦", fontSize = 44.sp)
+                    Text("📦", fontSize = 42.sp)
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        "Sin transferencias recientes",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 15.sp,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
+                    Text("Sin archivos registrados", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = if (isDark) Color.White else Color.Black)
                 }
             }
         } else {
             LazyColumn(modifier = Modifier.weight(1f)) {
-                items(transferHistory) { item ->
+                items(filteredHistory) { item ->
+                    val sizeMb = String.format(Locale.US, "%.2f MB", item.fileSize.toDouble() / (1024 * 1024))
+                    val dateStr = SimpleDateFormat("dd/MM HH:mm", Locale.getDefault()).format(Date(item.timestamp))
+
                     GlassCard(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 4.dp),
+                            .padding(vertical = 3.dp),
                         isDark = isDark
                     ) {
                         Row(
@@ -1834,46 +1824,39 @@ fun TransfersTabScreen(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.weight(1f)
-                            ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
                                 Box(
                                     modifier = Modifier
-                                        .size(42.dp)
+                                        .size(38.dp)
                                         .clip(RoundedCornerShape(10.dp))
-                                        .background(
-                                            if (item.isIncoming) Color(0xFF34C759).copy(alpha = 0.15f)
-                                            else MaterialTheme.colorScheme.primaryContainer
-                                        ),
+                                        .background(if (item.isIncoming) Color(0xFF34C759).copy(alpha = 0.2f) else Color(0xFF0B6CFF).copy(alpha = 0.2f)),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    Text(if (item.isIncoming) "📥" else "📤", fontSize = 18.sp)
+                                    Text(if (item.isIncoming) "📥" else "📤", fontSize = 16.sp)
                                 }
+
                                 Spacer(modifier = Modifier.width(10.dp))
+
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
                                         text = item.fileName,
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 13.sp,
-                                        color = MaterialTheme.colorScheme.onSurface,
+                                        color = if (isDark) Color.White else Color(0xFF111114),
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
-                                    val sizeMb = String.format(java.util.Locale.US, "%.2f MB", item.fileSize.toDouble() / (1024 * 1024))
                                     Text(
-                                        text = "$sizeMb • ${if (item.isIncoming) "Recibido de" else "Enviado a"} ${item.peerName}",
+                                        text = "$sizeMb • $dateStr • ${if (item.isIncoming) "De" else "Para"} ${item.peerName}",
                                         fontSize = 11.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        color = Color(0xFF8E8E93),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 }
                             }
-                            Text(
-                                text = "Completado",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color(0xFF34C759)
-                            )
+
+                            Text("✅", fontSize = 14.sp)
                         }
                     }
                 }
