@@ -87,40 +87,7 @@ fun RadarTabScreen(
 ) {
     val context = LocalContext.current
     val scrollState = rememberScrollState()
-
-    var selectedProvState by remember(selectedMunicipality) {
-        mutableStateOf(selectedMunicipality?.province ?: mapManager.getProvinces().firstOrNull() ?: "")
-    }
-    var expandedProv by remember { mutableStateOf(false) }
-    var expandedMuni by remember { mutableStateOf(false) }
-
-    val scope = rememberCoroutineScope()
     var isMapFullScreen by remember { mutableStateOf(false) }
-
-    val importMapLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
-    ) { uri ->
-        if (uri != null) {
-            scope.launch(Dispatchers.IO) {
-                try {
-                    val mapsDir = mapManager.getMapsDir()
-                    val destFile = File(mapsDir, "custom_user_map_${System.currentTimeMillis()}.pmtiles")
-                    context.contentResolver.openInputStream(uri)?.use { input ->
-                        FileOutputStream(destFile).use { output ->
-                            input.copyTo(output)
-                        }
-                    }
-                    withContext(Dispatchers.Main) {
-                        Toast.makeText(context, "¡Mapa .pmtiles importado con éxito!", Toast.LENGTH_LONG).show()
-                    }
-                } catch (e: Exception) {
-                    withContext(Dispatchers.Main) {
-                        Toast.makeText(context, "Error importando mapa: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
-                    }
-                }
-            }
-        }
-    }
 
     if (isMapFullScreen) {
         Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
@@ -131,6 +98,33 @@ fun RadarTabScreen(
                 peerMarkers = peerMarkers,
                 isFullScreen = true
             )
+
+            // Floating status pill top left
+            Row(
+                modifier = Modifier
+                    .padding(16.dp)
+                    .align(Alignment.TopStart)
+                    .clip(CircleShape)
+                    .background(Color(0xFF1C1C1E).copy(alpha = 0.85f))
+                    .border(1.dp, Color.White.copy(alpha = 0.15f), CircleShape)
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(10.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFF34C759))
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                val totalCount = peers.size + blePeers.size
+                Text(
+                    text = "$totalCount dispositivos cerca",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+            }
 
             IconButton(
                 onClick = { isMapFullScreen = false },
@@ -152,188 +146,81 @@ fun RadarTabScreen(
             .padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // Offline Map Card & MapView Integration
-        GlassCard(
-            modifier = Modifier.fillMaxWidth(),
-            isDark = isDark
-        ) {
-            Column(modifier = Modifier.fillMaxWidth()) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("🗺️", fontSize = 22.sp)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Column {
-                            Text(
-                                text = "Mapas Offline Protomaps",
-                                fontWeight = FontWeight.Black,
-                                fontSize = 15.sp,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            gpsDetectedMunicipality?.let { detected ->
-                                Text(
-                                    text = "📍 Detectado por GPS: ${detected.municipality}, ${detected.province}",
-                                    fontSize = 11.sp,
-                                    color = Color(0xFF34C759),
-                                    fontWeight = FontWeight.Bold
-                                )
-                            } ?: Text(
-                                text = "Sin GPS / Selección Manual",
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-
-                    Row {
-                        IconButton(onClick = { importMapLauncher.launch("*/*") }) {
-                            Text("📂", fontSize = 18.sp)
-                        }
-                        IconButton(onClick = { isMapFullScreen = true }) {
-                            Text("⤢", fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Selector: Provincia -> Municipio
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    // Province Dropdown
-                    Box(modifier = Modifier.weight(1f)) {
-                        OutlinedButton(
-                            onClick = { expandedProv = true },
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp),
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
-                        ) {
-                            Text(
-                                text = if (selectedProvState.isNotEmpty()) selectedProvState else "Provincia",
-                                fontSize = 11.sp,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                        DropdownMenu(
-                            expanded = expandedProv,
-                            onDismissRequest = { expandedProv = false }
-                        ) {
-                            mapManager.getProvinces().forEach { prov ->
-                                DropdownMenuItem(
-                                    text = { Text(prov, fontSize = 12.sp) },
-                                    onClick = {
-                                        selectedProvState = prov
-                                        expandedProv = false
-                                        val firstMuni = mapManager.getMunicipalitiesForProvince(prov).firstOrNull()
-                                        if (firstMuni != null) {
-                                            onSelectMunicipality(firstMuni)
-                                        }
-                                    }
-                                )
-                            }
-                        }
-                    }
-
-                    // Municipality Dropdown
-                    Box(modifier = Modifier.weight(1f)) {
-                        val availableMunis = remember(selectedProvState) {
-                            mapManager.getMunicipalitiesForProvince(selectedProvState)
-                        }
-                        OutlinedButton(
-                            onClick = { expandedMuni = true },
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp),
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
-                        ) {
-                            Text(
-                                text = selectedMunicipality?.municipality ?: "Municipio",
-                                fontSize = 11.sp,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                        DropdownMenu(
-                            expanded = expandedMuni,
-                            onDismissRequest = { expandedMuni = false }
-                        ) {
-                            availableMunis.forEach { muni ->
-                                DropdownMenuItem(
-                                    text = { Text(muni.municipality, fontSize = 12.sp) },
-                                    onClick = {
-                                        onSelectMunicipality(muni)
-                                        expandedMuni = false
-                                    }
-                                )
-                            }
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                // Action Buttons: Download or Share Map P2P
-                selectedMunicipality?.let { item ->
-                    val isDownloaded = mapManager.isMapDownloaded(item)
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        if (!isDownloaded) {
-                            Button(
-                                onClick = { onDownloadMap(item) },
-                                enabled = !isMapDownloading,
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(12.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                            ) {
-                                Text(
-                                    text = if (isMapDownloading) "Descargando ${(downloadProgress * 100).toInt()}%..." else "📥 Descargar GitHub Release",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color.White
-                                )
-                            }
-                        } else {
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(Color(0xFF34C759).copy(alpha = 0.15f))
-                                    .padding(vertical = 8.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text("✅ Mapa Local Listo", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFF34C759))
-                            }
-
-                            currentMapFile?.let { mapF ->
-                                Button(
-                                    onClick = { onShareMapP2P(mapF) },
-                                    modifier = Modifier.weight(1f),
-                                    shape = RoundedCornerShape(12.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
-                                ) {
-                                    Text("⚡ Compartir P2P", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // MapLibre Vector Map View Component
-                OfflineMapView(
-                    mapFile = currentMapFile,
-                    isDark = isDark,
-                    userLocation = userLocation,
-                    peerMarkers = peerMarkers
+        // Offline Radar Map Header Container (Full width clean card matching escaner_mapa_sin_header.html)
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(280.dp)
+                .clip(RoundedCornerShape(24.dp))
+                .border(
+                    1.dp,
+                    if (isDark) Color.White.copy(alpha = 0.12f) else Color.Black.copy(alpha = 0.08f),
+                    RoundedCornerShape(24.dp)
                 )
+        ) {
+            OfflineMapView(
+                mapFile = currentMapFile,
+                isDark = isDark,
+                userLocation = userLocation,
+                peerMarkers = peerMarkers,
+                isFullScreen = false
+            )
+
+            // Floating status pill top left
+            Row(
+                modifier = Modifier
+                    .padding(12.dp)
+                    .align(Alignment.TopStart)
+                    .clip(CircleShape)
+                    .background(if (isDark) Color(0xFF1C1C1E).copy(alpha = 0.85f) else Color.White.copy(alpha = 0.9f))
+                    .border(1.dp, Color.White.copy(alpha = 0.15f), CircleShape)
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFF34C759))
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                val totalCount = peers.size + blePeers.size
+                Text(
+                    text = "$totalCount dispositivos cerca",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (isDark) Color.White else Color.Black
+                )
+            }
+
+            // Expand Full Screen Button top right
+            IconButton(
+                onClick = { isMapFullScreen = true },
+                modifier = Modifier
+                    .padding(12.dp)
+                    .align(Alignment.TopEnd)
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(if (isDark) Color(0xFF1C1C1E).copy(alpha = 0.85f) else Color.White.copy(alpha = 0.9f))
+            ) {
+                Text("⤢", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = if (isDark) Color.White else Color.Black)
+            }
+
+            // Selected Municipality Legend bottom left
+            selectedMunicipality?.let { muni ->
+                Row(
+                    modifier = Modifier
+                        .padding(12.dp)
+                        .align(Alignment.BottomStart)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color.Black.copy(alpha = 0.65f))
+                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(modifier = Modifier.size(6.dp).clip(CircleShape).background(Color(0xFF2F8CFF)))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("${muni.province} · ${muni.municipality}", fontSize = 10.sp, color = Color.White, fontWeight = FontWeight.SemiBold)
+                }
             }
         }
 
@@ -1946,6 +1833,15 @@ fun SettingsTabScreen(
     currentThemeIndex: Int,
     isDarkMode: Boolean,
     isBgDiscoveryEnabled: Boolean,
+    mapManager: MapManager,
+    selectedMunicipality: MunicipalityItem?,
+    isMapDownloading: Boolean,
+    downloadProgress: Float,
+    currentMapFile: File?,
+    gpsDetectedMunicipality: MunicipalityItem?,
+    onSelectMunicipality: (MunicipalityItem) -> Unit,
+    onDownloadMap: (MunicipalityItem) -> Unit,
+    onShareMapP2P: (File) -> Unit,
     onSaveProfile: (String, String, Int) -> Unit,
     onSelectTheme: (Int) -> Unit,
     onToggleDarkMode: (Boolean) -> Unit,
@@ -2287,6 +2183,215 @@ fun SettingsTabScreen(
                     checked = isBgDiscoveryEnabled,
                     onCheckedChange = { onToggleBgDiscovery(it) }
                 )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Offline Map Management Card
+        Text(
+            text = "MAPAS OFF-LINE DE CUBA (PROTOMAPS / PMTILES)",
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Black,
+            color = MaterialTheme.colorScheme.primary,
+            letterSpacing = 1.sp
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        GlassCard(
+            modifier = Modifier.fillMaxWidth(),
+            isDark = isDarkMode
+        ) {
+            var selectedProvState by remember(selectedMunicipality) {
+                mutableStateOf(selectedMunicipality?.province ?: mapManager.getProvinces().firstOrNull() ?: "")
+            }
+            var expandedProv by remember { mutableStateOf(false) }
+            var expandedMuni by remember { mutableStateOf(false) }
+
+            val scope = rememberCoroutineScope()
+            val importMapLauncher = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.GetContent()
+            ) { uri ->
+                if (uri != null) {
+                    scope.launch(Dispatchers.IO) {
+                        try {
+                            val mapsDir = mapManager.getMapsDir()
+                            val destFile = File(mapsDir, "custom_user_map_${System.currentTimeMillis()}.pmtiles")
+                            context.contentResolver.openInputStream(uri)?.use { input ->
+                                FileOutputStream(destFile).use { output ->
+                                    input.copyTo(output)
+                                }
+                            }
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(context, "¡Mapa .pmtiles importado con éxito!", Toast.LENGTH_LONG).show()
+                            }
+                        } catch (e: Exception) {
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(context, "Error importando mapa: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    }
+                }
+            }
+
+            gpsDetectedMunicipality?.let { detected ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color(0xFF34C759).copy(alpha = 0.15f))
+                        .padding(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("📍 GPS: ${detected.municipality}, ${detected.province}", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFF34C759))
+                        Text("Ubicación actual detectada", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    TextButton(onClick = { onSelectMunicipality(detected) }) {
+                        Text("Usar", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+                Spacer(modifier = Modifier.height(10.dp))
+            }
+
+            Text("Seleccionar Municipio:", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            Spacer(modifier = Modifier.height(6.dp))
+
+            // Selector: Provincia -> Municipio
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // Province Dropdown
+                Box(modifier = Modifier.weight(1f)) {
+                    OutlinedButton(
+                        onClick = { expandedProv = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            text = if (selectedProvState.isNotEmpty()) selectedProvState else "Provincia",
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = expandedProv,
+                        onDismissRequest = { expandedProv = false }
+                    ) {
+                        mapManager.getProvinces().forEach { prov ->
+                            DropdownMenuItem(
+                                text = { Text(prov, fontSize = 12.sp) },
+                                onClick = {
+                                    selectedProvState = prov
+                                    expandedProv = false
+                                    val firstMuni = mapManager.getMunicipalitiesForProvince(prov).firstOrNull()
+                                    if (firstMuni != null) {
+                                        onSelectMunicipality(firstMuni)
+                                    }
+                                }
+                            )
+                        }
+                    }
+                }
+
+                // Municipality Dropdown
+                Box(modifier = Modifier.weight(1f)) {
+                    val availableMunis = remember(selectedProvState) {
+                        mapManager.getMunicipalitiesForProvince(selectedProvState)
+                    }
+                    OutlinedButton(
+                        onClick = { expandedMuni = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            text = selectedMunicipality?.municipality ?: "Municipio",
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = expandedMuni,
+                        onDismissRequest = { expandedMuni = false }
+                    ) {
+                        availableMunis.forEach { muni ->
+                            DropdownMenuItem(
+                                text = { Text(muni.municipality, fontSize = 12.sp) },
+                                onClick = {
+                                    onSelectMunicipality(muni)
+                                    expandedMuni = false
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Download / Share Buttons
+            selectedMunicipality?.let { item ->
+                val isDownloaded = mapManager.isMapDownloaded(item)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (!isDownloaded) {
+                        Button(
+                            onClick = { onDownloadMap(item) },
+                            enabled = !isMapDownloading,
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                        ) {
+                            Text(
+                                text = if (isMapDownloading) "Descargando ${(downloadProgress * 100).toInt()}%..." else "📥 Descargar GitHub Release",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                        }
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(Color(0xFF34C759).copy(alpha = 0.15f))
+                                .padding(vertical = 8.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("✅ Mapa Local Listo", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFF34C759))
+                        }
+
+                        currentMapFile?.let { mapF ->
+                            Button(
+                                onClick = { onShareMapP2P(mapF) },
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                            ) {
+                                Text("⚡ Compartir P2P", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            OutlinedButton(
+                onClick = { importMapLauncher.launch("*/*") },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text("📂 Importar archivo .pmtiles local", fontSize = 12.sp, fontWeight = FontWeight.Bold)
             }
         }
     }
