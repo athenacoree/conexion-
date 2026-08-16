@@ -15,7 +15,12 @@
         tools:targetApi="tiramisu" />
 
 
-    <!-- Storage Permissions for legacy or compatibility if needed, though MediaStore is preferred -->
+    <!-- Media Permissions for reading real music, videos, and images -->
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+
+    <!-- Storage Permissions for legacy compatibility -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
 
