@@ -1309,12 +1309,106 @@ fun ChatsTabScreen(
             )
         }
     } else {
-        // Conversations List Screen
+        // Conversations List Screen based on chats-list.html
+        var searchQuery by remember { mutableStateOf("") }
+        var activeFilter by remember { mutableStateOf("all") } // "all", "unread", "pinned"
+        val pinnedChatIds = remember { mutableStateListOf<String>() }
+        val mutedChatIds = remember { mutableStateListOf<String>() }
+        var selectedChatForContext by remember { mutableStateOf<PeerInfo?>(null) }
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(16.dp)
+                .background(if (isDark) Color(0xFF000000) else Color(0xFFF2F2F7))
+                .padding(horizontal = 14.dp, vertical = 8.dp)
         ) {
+            // iMessage Top Bar with Edit and Compose
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Editar",
+                    fontSize = 16.sp,
+                    color = Color(0xFF0B6CFF),
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.clickable {
+                        Toast.makeText(context, "Modo edición de chats", Toast.LENGTH_SHORT).show()
+                    }
+                )
+
+                Text(
+                    text = "Chats",
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Black,
+                    color = if (isDark) Color.White else Color(0xFF111114)
+                )
+
+                IconButton(
+                    onClick = {
+                        Toast.makeText(context, "Crear nuevo chat P2P...", Toast.LENGTH_SHORT).show()
+                    },
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Text("📝", fontSize = 18.sp)
+                }
+            }
+
+            // Search Bar
+            TextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 6.dp)
+                    .clip(RoundedCornerShape(12.dp)),
+                placeholder = { Text("Buscar personas o mensajes...", fontSize = 14.sp, color = Color(0xFF8E8E93)) },
+                colors = TextFieldDefaults.colors(
+                    focusedContainerColor = if (isDark) Color(0xFF1C1C1E) else Color(0xFFE3E3E5),
+                    unfocusedContainerColor = if (isDark) Color(0xFF1C1C1E) else Color(0xFFE3E3E5),
+                    focusedIndicatorColor = Color.Transparent,
+                    unfocusedIndicatorColor = Color.Transparent
+                ),
+                singleLine = true
+            )
+
+            // Segmented Filter Control ("Todos", "No leídos", "Fijados")
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 6.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(if (isDark) Color(0xFF1C1C1E) else Color(0xFFE3E3E5))
+                    .padding(3.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                val filters = listOf("all" to "Todos", "unread" to "No leídos", "pinned" to "Fijados")
+                filters.forEach { (key, label) ->
+                    val isSel = activeFilter == key
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (isSel) (if (isDark) Color(0xFF2C2C2E) else Color.White) else Color.Transparent)
+                            .clickable { activeFilter = key }
+                            .padding(vertical = 6.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = label,
+                            fontSize = 12.sp,
+                            fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium,
+                            color = if (isDark) Color.White else Color.Black
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+
             // Stories Row on Top
             PeerStoriesCarousel(
                 myAvatarIndex = myAvatarIndex,
@@ -1325,19 +1419,22 @@ fun ChatsTabScreen(
                 onBlePeerClick = onBlePeerSelected
             )
 
-            Spacer(modifier = Modifier.height(14.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
-            Text(
-                text = "CHATS Y CONVERSACIONES",
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Black,
-                color = MaterialTheme.colorScheme.primary,
-                letterSpacing = 1.sp
-            )
+            // Filtered Peer List
+            val filteredPeers = remember(peers, searchQuery, activeFilter, pinnedChatIds.toList()) {
+                peers.filter { p ->
+                    val matchesQuery = searchQuery.isEmpty() || p.userName.contains(searchQuery, ignoreCase = true)
+                    val isPinned = pinnedChatIds.contains(p.sessionToken.ifEmpty { p.device.deviceAddress })
+                    val matchesFilter = when (activeFilter) {
+                        "pinned" -> isPinned
+                        else -> true
+                    }
+                    matchesQuery && matchesFilter
+                }.sortedByDescending { pinnedChatIds.contains(it.sessionToken.ifEmpty { it.device.deviceAddress }) }
+            }
 
-            Spacer(modifier = Modifier.height(8.dp))
-
-            if (peers.isEmpty() && blePeers.isEmpty()) {
+            if (filteredPeers.isEmpty() && blePeers.isEmpty()) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1348,16 +1445,16 @@ fun ChatsTabScreen(
                         Text("💬", fontSize = 48.sp)
                         Spacer(modifier = Modifier.height(12.dp))
                         Text(
-                            "Sin contactos activos",
+                            "Sin chats activos",
                             fontWeight = FontWeight.Bold,
                             fontSize = 16.sp,
-                            color = MaterialTheme.colorScheme.onSurface
+                            color = if (isDark) Color.White else Color.Black
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            "Escanea dispositivos en la pestaña Escáner para iniciar un chat directo P2P.",
+                            "Escanea dispositivos o selecciona un contacto para iniciar un chat P2P.",
                             fontSize = 13.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = Color(0xFF8E8E93),
                             textAlign = TextAlign.Center,
                             modifier = Modifier.padding(horizontal = 32.dp)
                         )
@@ -1365,42 +1462,128 @@ fun ChatsTabScreen(
                 }
             } else {
                 LazyColumn(modifier = Modifier.weight(1f)) {
-                    items(peers) { peer ->
+                    items(filteredPeers) { peer ->
+                        val peerId = peer.sessionToken.ifEmpty { peer.device.deviceAddress }
+                        val isPinned = pinnedChatIds.contains(peerId)
+                        val isMuted = mutedChatIds.contains(peerId)
+
                         GlassCard(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = 4.dp),
+                                .padding(vertical = 3.dp),
                             isDark = isDark,
-                            onClick = { onSelectPeerToChat(peer.sessionToken.ifEmpty { peer.device.deviceAddress }, peer.userName) }
+                            onClick = { onSelectPeerToChat(peerId, peer.userName) }
                         ) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    AvatarBubble(avatarIndex = peer.avatarIndex, size = 48.dp)
-                                    Spacer(modifier = Modifier.width(12.dp))
-                                    Column {
-                                        Text(
-                                            text = peer.userName,
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 15.sp,
-                                            color = MaterialTheme.colorScheme.onSurface
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                    Box {
+                                        AvatarBubble(avatarIndex = peer.avatarIndex, size = 46.dp)
+                                        Box(
+                                            modifier = Modifier
+                                                .size(11.dp)
+                                                .clip(CircleShape)
+                                                .background(Color(0xFF34C759))
+                                                .border(1.5.dp, if (isDark) Color.Black else Color.White, CircleShape)
+                                                .align(Alignment.BottomEnd)
                                         )
+                                    }
+
+                                    Spacer(modifier = Modifier.width(12.dp))
+
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            if (isPinned) {
+                                                Text("📌 ", fontSize = 11.sp)
+                                            }
+                                            Text(
+                                                text = peer.userName,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 15.sp,
+                                                color = if (isDark) Color.White else Color(0xFF111114),
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
                                         Text(
-                                            text = "Toca para abrir chat P2P cifrado",
+                                            text = if (isMuted) "🔕 Silenciado • P2P Activo" else "Toca para abrir chat P2P cifrado",
                                             fontSize = 12.sp,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            color = Color(0xFF8E8E93),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
                                         )
                                     }
                                 }
-                                Text("💬", fontSize = 20.sp)
+
+                                Column(horizontalAlignment = Alignment.End) {
+                                    Text(
+                                        text = "Ahora",
+                                        fontSize = 11.sp,
+                                        color = Color(0xFF8E8E93)
+                                    )
+                                    IconButton(
+                                        onClick = { selectedChatForContext = peer },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Text("•••", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFF8E8E93))
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
+        }
+
+        // Long-Press / Options Modal for Chats List row based on chats-list.html
+        selectedChatForContext?.let { selectedPeer ->
+            val peerId = selectedPeer.sessionToken.ifEmpty { selectedPeer.device.deviceAddress }
+            val isPinned = pinnedChatIds.contains(peerId)
+            val isMuted = mutedChatIds.contains(peerId)
+
+            AlertDialog(
+                onDismissRequest = { selectedChatForContext = null },
+                title = { Text(selectedPeer.userName, fontWeight = FontWeight.Bold) },
+                text = {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        TextButton(
+                            onClick = {
+                                if (isPinned) pinnedChatIds.remove(peerId) else pinnedChatIds.add(peerId)
+                                selectedChatForContext = null
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(if (isPinned) "📌 Desfijar Chat" else "📌 Fijar Chat", modifier = Modifier.fillMaxWidth())
+                        }
+
+                        TextButton(
+                            onClick = {
+                                if (isMuted) mutedChatIds.remove(peerId) else mutedChatIds.add(peerId)
+                                selectedChatForContext = null
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(if (isMuted) "🔔 Activar Notificaciones" else "🔕 Silenciar Chat", modifier = Modifier.fillMaxWidth())
+                        }
+
+                        TextButton(
+                            onClick = {
+                                onSelectPeerToChat(peerId, selectedPeer.userName)
+                                selectedChatForContext = null
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("💬 Abrir Conversación", modifier = Modifier.fillMaxWidth())
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { selectedChatForContext = null }) { Text("Cerrar") }
+                }
+            )
         }
     }
 }
