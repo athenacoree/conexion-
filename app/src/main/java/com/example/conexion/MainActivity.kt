@@ -1236,6 +1236,53 @@ class MainActivity : ComponentActivity() {
                         currentThemeIndex = currentThemeIndex.value,
                         isDarkMode = isDarkMode.value,
                         isBgDiscoveryEnabled = isBgDiscoveryEnabled.value,
+                        mapManager = mapManager,
+                        selectedMunicipality = selectedMunicipality.value,
+                        isMapDownloading = isMapDownloading.value,
+                        downloadProgress = downloadMapProgress.value,
+                        currentMapFile = currentMapFile.value,
+                        gpsDetectedMunicipality = gpsDetectedMunicipality.value,
+                        onSelectMunicipality = { item ->
+                            selectedMunicipality.value = item
+                            if (mapManager.isMapDownloaded(item)) {
+                                val f = mapManager.getLocalMapFile(item)
+                                currentMapFile.value = f
+                                pmTilesTileServer.setMapFile(f)
+                            } else {
+                                currentMapFile.value = null
+                            }
+                        },
+                        onDownloadMap = { item ->
+                            isMapDownloading.value = true
+                            downloadMapProgress.value = 0f
+                            lifecycleScope.launch {
+                                mapManager.downloadMap(
+                                    item = item,
+                                    onProgress = { p -> downloadMapProgress.value = p },
+                                    onSuccess = { f ->
+                                        isMapDownloading.value = false
+                                        currentMapFile.value = f
+                                        pmTilesTileServer.setMapFile(f)
+                                        Toast.makeText(this@MainActivity, "Mapa de ${item.municipality} descargado con éxito", Toast.LENGTH_SHORT).show()
+                                    },
+                                    onError = { err ->
+                                        isMapDownloading.value = false
+                                        Toast.makeText(this@MainActivity, err, Toast.LENGTH_LONG).show()
+                                    }
+                                )
+                            }
+                        },
+                        onShareMapP2P = { mapFile ->
+                            val currentConnected = currentConnectionInfo.value?.groupOwnerAddress?.hostAddress
+                            if (!currentConnected.isNullOrEmpty()) {
+                                lifecycleScope.launch {
+                                    fileTransferManager.sendFile(currentConnected, Uri.fromFile(mapFile))
+                                }
+                                Toast.makeText(this@MainActivity, "Enviando mapa P2P...", Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(this@MainActivity, "Conéctate a un dispositivo P2P para enviar el mapa", Toast.LENGTH_LONG).show()
+                            }
+                        },
                         onSaveProfile = { name, phone, avatar ->
                             myNameState.value = name
                             myPhoneState.value = phone
