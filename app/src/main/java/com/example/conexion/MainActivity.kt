@@ -1311,39 +1311,73 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            NavigationBar(
-                containerColor = if (isDarkMode.value) Color(0xFF161F2E).copy(alpha = 0.95f) else Color(0xFFFFFFFF).copy(alpha = 0.95f),
-                tonalElevation = 8.dp
-            ) {
-                val navItems = listOf(
-                    Triple("Escáner", "📡", 0),
-                    Triple("Chats", "💬", 1),
-                    Triple("Envíos", "⚡", 2),
-                    Triple("Media", "📺", 3),
-                    Triple("Ajustes", "⚙️", 4)
-                )
+            val navBg = if (isDarkMode.value) Color(0xD10A0A0C) else Color(0xF2F8F8F8)
+            val navBorder = if (isDarkMode.value) Color(0x6C545458) else Color(0x4A3C3C43)
+            val activeBlue = if (isDarkMode.value) Color(0xFF2F8CFF) else Color(0xFF0B6CFF)
+            val inactiveGray = Color(0xFF8E8E93)
 
-                navItems.forEach { (label, icon, tabIdx) ->
-                    val isSelected = currentTab == tabIdx
-                    NavigationBarItem(
-                        selected = isSelected,
-                        onClick = {
-                            HapticManager.performLightClick(context)
-                            currentTab = tabIdx
-                        },
-                        icon = { Text(icon, fontSize = 20.sp) },
-                        label = {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(width = 0.5.dp, color = navBorder),
+                color = navBg,
+                shadowElevation = 4.dp
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 6.dp, bottom = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    val navItems = listOf(
+                        Triple("Escáner", R.drawable.ic_tab_escaner, 0),
+                        Triple("Chats", R.drawable.ic_tab_chats, 1),
+                        Triple("Envíos", R.drawable.ic_tab_envios, 2),
+                        Triple("Media", R.drawable.ic_tab_media, 3),
+                        Triple("Ajustes", R.drawable.ic_tab_ajustes, 4)
+                    )
+
+                    navItems.forEach { (label, iconRes, tabIdx) ->
+                        val isSelected = currentTab == tabIdx
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable {
+                                    HapticManager.performLightClick(context)
+                                    currentTab = tabIdx
+                                }
+                                .padding(vertical = 4.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .let {
+                                        if (isSelected) {
+                                            it.clip(CircleShape).background(activeBlue.copy(alpha = 0.14f))
+                                        } else it
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    painter = androidx.compose.ui.res.painterResource(id = iconRes),
+                                    contentDescription = label,
+                                    tint = if (isSelected) activeBlue else inactiveGray,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(2.dp))
                             Text(
                                 text = label,
-                                fontSize = 11.sp,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                                fontSize = 10.5.sp,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                color = if (isSelected) activeBlue else inactiveGray
                             )
-                        },
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = MaterialTheme.colorScheme.primary,
-                            indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
-                        )
-                    )
+                        }
+                    }
                 }
             }
         }
